@@ -301,6 +301,16 @@ bool GuestBusy() {
     return state().building || state().dialog;
 }
 
+launcher::Notice GuestNotice(const std::filesystem::path &folder) {
+    if (state().building || state().copying) return {};
+    const std::filesystem::path file = built_file(folder);
+    if (!is_file(file) || guest::guests_version(file.u8string()) == guest::GUESTS_VERSION) return {};
+    return {"REBUILD NEEDED", "Rebuild the guests",
+            "Link and Heihachi were built by an earlier release. Rebuild them on the Guest page to get this release's "
+            "fixes; online play also needs both players' guests built by the same release.",
+            "Guest page", "Guest"};
+}
+
 std::vector<std::string> GuestArguments(const std::filesystem::path &folder, const std::string &game_file) {
     const std::filesystem::path file = built_file(folder);
     if (!is_file(file) || IsEuropeanDisc(game_file)) return {};

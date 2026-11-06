@@ -12,6 +12,8 @@
 void GuestPage(launcher::PageContext &page);
 void GuestDrop(launcher::PageContext &page, const char *path);
 bool GuestBusy();
+// The Game page's notice while the guests' file was built by an earlier release (none while one is being built)
+launcher::Notice GuestNotice(const std::filesystem::path &folder);
 // What Play adds while Link or Heihachi is chosen and built (with the US disc: `game_file`)
 std::vector<std::string> GuestArguments(const std::filesystem::path &folder, const std::string &game_file);
 // Whether the game file the checks found is the European disc's (description.cpp)

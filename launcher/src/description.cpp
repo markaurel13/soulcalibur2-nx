@@ -240,6 +240,7 @@ const launcher::Description &launcher::describe() {
         d.original = "on the Xbox";
         d.pages = {{"Guest", GuestPage, GuestDrop, GuestBusy}, {"Textures", TexturesPage, TexturesDrop, TexturesBusy}};
         d.open_on_game_page = true;
+        d.notice = GuestNotice;
         d.file_heading = "GAME FILES";
 #ifdef __ANDROID__
         d.file_intro = "Choose your own copy of the game: an image of your Soulcalibur II (USA) Xbox disc (.iso). "
