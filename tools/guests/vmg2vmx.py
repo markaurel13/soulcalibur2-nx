@@ -82,16 +82,20 @@ def _strip_indices(primitive_lists):
     return out
 
 
-def _triangle_list(primitive_lists):
+def _triangle_list(primitive_lists, one_sided):
     """The third group's triangle list (the game sorts those meshes by triangle): each strip's triangles in the
-    strip's own order (which is the Xbox's own facing for these, checked against the 15 characters both have)."""
+    strip's own order, which is the Xbox's own facing for a two-sided material; a one-sided one (0x08000000, the
+    back faces culled) has them the other way round on the Xbox, so they are turned over (all 197 such triangles
+    of the shared characters face as the Xbox's do; left as they were, every one faces away and is culled)."""
     out = []
     for strip in primitive_lists:
         for i in range(len(strip) - 2):
             a, b, c = strip[i:i + 3]
             if a == b or b == c or a == c:
                 continue
-            out += [a, b, c] if i % 2 == 0 else [b, a, c]
+            if i % 2:
+                a, b = b, a
+            out += [a, c, b] if one_sided else [a, b, c]
     return out
 
 
@@ -266,7 +270,8 @@ def convert(gc):
                 sphere = (*centre, max(sum((a - b) ** 2 for a, b in zip(q, centre)) ** 0.5 for q in points))
             bounds_x = out.put(struct.pack("<4f", *sphere), 0x10)
             tail = (buffer_x, 0, 0, 0, bounds_x)
-        sequence = _triangle_list(strips) if m["group"] == 2 else _strip_indices(strips)
+        one_sided = bool(_be("I", gc, m["material"])[0] & 0x08000000)
+        sequence = _triangle_list(strips, one_sided) if m["group"] == 2 else _strip_indices(strips)
         indices_x = out.put(struct.pack("<%dH" % len(sequence), *sequence), 0x10)
         node_ptr = node_x + (m["node"] - node_base) // 0x150 * 0x190
         material_ptr = material_x + (m["material"] - material_base)

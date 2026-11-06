@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Link's hair**: the locks framing his face are drawn again, fixing the dark gaps near his temples in character select and fights. The guests' file is rebuilt once.
+
 ## 0.3.0-beta.1
 
 The GameCube HD texture pack, the European disc in its five languages on the Mac, and fixes: Linux starts without

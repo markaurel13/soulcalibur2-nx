@@ -49,6 +49,20 @@ def geometry(model):
             for p in m.meshes]
 
 
+def facing(model):
+    """Each one-sided mesh's (material 0x08000000: back faces culled) triangles with their winding, one rotation
+    of each: the meshes above are compared as vertex sets, which a triangle turned over still matches."""
+    m = vmx.decode(model)
+    flags = lambda p: struct.unpack_from("<I", model, struct.unpack_from("<I", model, 0x1c)[0] + p.bone * 0x50)[0]
+    key = lambda v: (tuple(round(c, 3) for c in v.position), tuple(round(c, 2) for c in v.uv))
+
+    def turned(t):
+        k = [key(v) for v in t]
+        i = k.index(min(k))
+        return tuple(k[i:] + k[:i])
+    return [{turned(t) for t in p.triangles} if flags(p) & 0x08000000 else None for p in m.meshes]
+
+
 def main():
     xbox, gc = Olnk.open(sys.argv[1]).child(4), Olnk.open(sys.argv[2]).child(4)
     characters = range(int(sys.argv[3])) if len(sys.argv) > 3 else range(22)
@@ -74,6 +88,11 @@ def main():
             result["meshes", len(ga) == len(gb)] += 1
             for p, q in zip(ga, gb):
                 result["mesh", p[:4] == q[:4], p[4] == q[4]] += 1
+            for p, q, group in zip(facing(mine), facing(x), (m[0] for m in ga)):
+                if p is not None and q is not None:
+                    result["one-sided triangles facing as the Xbox's, group %d" % group, True] += len(p & q)
+                    result["one-sided triangles facing as the Xbox's, group %d" % group, False] += sum(
+                        min((t[0], t[2], t[1])[i:] + (t[0], t[2], t[1])[:i] for i in range(3)) in q for t in p - q)
     for item, n in sorted(result.items(), key=str):
         print(n, item)
 

@@ -429,3 +429,21 @@ sums, matching the C++ converter. Python 3.12 and newer changed the built-in
 `sum` algorithm; using it could change near-zero bounding-sphere coordinates
 and prevent byte-identical archives even though material decoding agreed.
 The regression includes cancellation and signed-zero cases.
+
+## One-sided sorted meshes face the Xbox's way (2026-11-06)
+
+The locks framing Link's face (material 3, the third group's sorted
+triangles) were missing in every costume, leaving dark angular gaps at his
+temples. Material flag 0x08000000 is one-sided (back faces culled): the
+Xbox's own models face nearly every such triangle along its normals (0.1%
+otherwise), while two-sided materials mix both ways. The third group's
+triangle list kept each strip's GameCube order, which is the Xbox's facing
+for two-sided materials but the reverse for one-sided ones, so all 90 of
+Link's material-3 triangles faced away and were culled. `_triangle_list`
+(and `triangle_list` in `guest/vmx.cpp`) now turns one-sided triangles over.
+`check_models.py` compared triangles as vertex sets, which a turned-over
+triangle still matches; it now also counts each one-sided triangle's winding
+against the Xbox's. For the shared characters, group 2: 0 of 394 facing the
+Xbox's way before, 394 of 394 after; groups 0 and 1 unchanged (840 of 840 in
+group 1; in group 0, 654 of 257,368 are reversed, as before). Guest cache
+version 3 rebuilds older files.

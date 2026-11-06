@@ -142,16 +142,18 @@ std::vector<uint32_t> strip_indices(const std::vector<std::vector<uint32_t>> &st
 }
 
 // The third group's triangle list (the game sorts those meshes by triangle): each strip's triangles in the
-// strip's own order (the Xbox's own facing for these).
-std::vector<uint32_t> triangle_list(const std::vector<std::vector<uint32_t>> &strips)
+// strip's own order, the Xbox's own facing for a two-sided material; a one-sided one (0x08000000, back faces
+// culled) has them the other way round on the Xbox, so they are turned over (tools/guests/vmg2vmx.py).
+std::vector<uint32_t> triangle_list(const std::vector<std::vector<uint32_t>> &strips, bool one_sided)
 {
     std::vector<uint32_t> out;
     for (const auto &strip : strips) {
         for (size_t i = 0; i + 2 < strip.size(); ++i) {
             const uint32_t a = strip[i], b = strip[i + 1], c = strip[i + 2];
             if (a == b || b == c || a == c) continue;
-            if (i % 2 == 0) out.insert(out.end(), {a, b, c});
-            else out.insert(out.end(), {b, a, c});
+            const uint32_t first = i % 2 ? b : a, second = i % 2 ? a : b;
+            if (one_sided) out.insert(out.end(), {first, c, second});
+            else out.insert(out.end(), {first, second, c});
         }
     }
     return out;
@@ -515,7 +517,8 @@ Bytes convert_model(const Bytes &gc)
             tail[1] = tail[2] = tail[3] = 0;
             tail[4] = uint32_t(bounds_x);
         }
-        const std::vector<uint32_t> sequence = m.group == 2 ? triangle_list(strips) : strip_indices(strips);
+        const bool one_sided = (be32(gc, m.material) & 0x08000000u) != 0;
+        const std::vector<uint32_t> sequence = m.group == 2 ? triangle_list(strips, one_sided) : strip_indices(strips);
         Bytes ib;
         for (uint32_t i : sequence) add16(ib, uint16_t(i));
         const size_t indices_x = out.put(ib, 0x10);
