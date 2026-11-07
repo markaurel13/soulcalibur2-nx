@@ -4,6 +4,10 @@
 
 - **Weapon swing sounds**: the whoosh of a swing is heard again. Its pitch moves every frame, and each change started
   the sound over on silence, so it never played (on every system).
+- **Music repeating a phrase** ([#32](https://github.com/tmcleroy/soulcalibur2-recomp/issues/32),
+  [#34](https://github.com/tmcleroy/soulcalibur2-recomp/issues/34)): when the game was held up for a moment (the
+  Steam overlay opening, a slow card, the system taking a while to hand back the window's picture), the music went on
+  from part of the track it had already played and repeated it. Now the music waits and goes on from where it was.
 - **Link's hair**: the locks framing his face are drawn again, fixing the dark gaps near his temples in character select and fights. The guests' file is rebuilt once.
 
 ## 0.3.0-beta.1
