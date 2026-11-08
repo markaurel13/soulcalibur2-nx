@@ -141,6 +141,14 @@ int sc2_movie_skip;
    switches to it once the fade is done. */
 static void scene_switch(void)
 {
+    static bool bonus_endings_ready;
+    if (!bonus_endings_ready) {
+        bonus_endings_ready = true;
+        const int16_t spawn_ending[4] = {86, 11, 85, 0};
+        for (uint32_t c = 30u; c <= 32u; ++c) {
+            memcpy(recomp_memory(0x0034ED88u + 8u * c, sizeof spawn_ending), spawn_ending, sizeof spawn_ending);
+        }
+    }
     const uint32_t esp = recomp_runtime.registers.esp;
     sc2_scene = *recomp_memory_u32(esp + 4u);
     ++sc2_scene_switches;
@@ -148,59 +156,17 @@ static void scene_switch(void)
     sub_000502A0();
 }
 
-/* 0x2ABC0(sprite), the menus' sprite draw. A sprite: centre x, y (+0, +4),
-   texture coordinates of its four corners (+0x10..+0x2c: top left, top right,
-   bottom right, bottom left) and half its size (+0x30, +0x34), in 640x448
-   units. The character select's grid panel (centre 320,224, 336x448, a 1:1
-   piece of a 512x512 texture) frames four columns; with a guest
-   in the fifth column it is drawn as three pieces: up to the middle of the
-   fourth column as it is, one column's slice of it again, and the rest one
-   column further right. */
-static bool select_panel(uint32_t sprite)
-{
-    const float *f = (const float *)recomp_memory(sprite, 0x38u);
-    return sc2_scene == 6u && f[0] == 320.0f && f[1] == 224.0f && f[12] == 168.0f && f[13] == 224.0f &&
-           f[4] == 0.0f && f[6] == 0.65625f;
-}
-
-static void sprite_piece(uint32_t sprite, float left, float right, float shift)
-{
-    float *f = (float *)recomp_memory(sprite, 0x38u);
-    const float u0 = (left - 152.0f) / 512.0f, u1 = (right - 152.0f) / 512.0f;
-    f[0] = (left + right) * 0.5f + shift;
-    f[12] = (right - left) * 0.5f;
-    f[4] = f[10] = u0;
-    f[6] = f[8] = u1;
-    kernel_call_guest(0x0002abc0u, &sprite, 1u);
-}
-
+/* 0x2ABC0(sprite), the menus' sprite draw. */
 static void sprite_draw(void)
 {
-    static bool inside;
     const uint32_t sprite = *recomp_memory_u32(recomp_runtime.registers.esp + 4u);
     /* (the free camera's clean view leaves out the menus' sprites too: the Museum's profile viewer draws its caption
        strip with them, outside the 2D layer) */
-    if (!inside && recomp_scene_freeze_overlay_hidden()) {
+    if (recomp_scene_freeze_overlay_hidden()) {
         recomp_runtime.registers.esp += 4u;   /* the original's ret */
         return;
     }
-    if (inside || !sc2_guest_fifth_column() || !select_panel(sprite)) {
-        sub_0002ABC0();
-        return;
-    }
-    /* one grid column on screen (the grid and the panel scale differently),
-       cut at the fourth column's middle */
-    const float column = 64.0f, cut = 407.84f;
-    float saved[14];
-    memcpy(saved, recomp_memory(sprite, sizeof saved), sizeof saved);
-    inside = true;
-    const float left = -column * 0.5f;   /* (the whole grid half a column left, centred again) */
-    sprite_piece(sprite, 152.0f, cut, left);
-    sprite_piece(sprite, cut - column, cut, left + column);
-    sprite_piece(sprite, cut, 488.0f, left + column);
-    inside = false;
-    memcpy(recomp_memory(sprite, sizeof saved), saved, sizeof saved);
-    recomp_runtime.registers.esp += 4u;   /* the original's ret */
+    sub_0002ABC0();
 }
 
 /* 0x6A190(position, cell): a select cell's place, x = its column x a column's width (0x17774C) plus the grid's
@@ -320,18 +286,46 @@ static void random_seed(void)
 
 /* 0x528E0(id, opponent): which of the final boss's forms (Inferno takes a fighting style from the one it fights:
    its /4 entry 7 + the form, or 23 + it) goes with the opponent's character, by a table of IDs 1-29 (0x52978).
-   The guests beside Spawn (27, 28) are not in it and get form 0, whose entries are empty on the disc: loading one
-   is the game's own endless loop (0x20ED0), before the final stage of Arcade. They take the guest slot's (Spawn's,
-   form 10), as Spawn in their place would. */
+   The guests beside Spawn (27, 28) and bonus fighters (30..32) are not in it and get form 0, whose entries are empty
+   on the disc: loading one is the game's own endless loop (0x20ED0), before the final stage of Arcade. They take
+   the guest slot's (Spawn's, form 10), as Spawn in their place would. */
 static void boss_form(void)
 {
     const int32_t opponent = (int32_t)*recomp_memory_u32(recomp_runtime.registers.esp + 8u);
-    if (opponent == 27 || opponent == 28) {
+    if (opponent == 27 || opponent == 28 || (opponent >= 30 && opponent <= 32)) {
         recomp_runtime.registers.eax = 10u;
         recomp_runtime.registers.esp += 4u;
         return;
     }
     sub_000528E0();
+}
+
+/* 0x698D0(character, costume), availability callback for bonus characters
+   (Berserker 30, Assassin 31, Lizardman 32). In the original it only allowed
+   them in VS, Team Battle and Practice (returning 0 for Arcade, Survival, and
+   Time Attack). Unlocked everywhere: available in all modes once unlocked. */
+static void character_available_bonus(void)
+{
+    const uint32_t esp = recomp_runtime.registers.esp;
+    const uint32_t character = *recomp_memory_u32(esp + 4u);
+    const uint32_t costume = *recomp_memory_u32(esp + 8u);
+    /* In the Museum profile viewer (mode 9), they have no profiles, so leave locked. */
+    if (*(const uint16_t *)recomp_memory(0x0039895Eu, 2u) == 9u) {
+        recomp_runtime.registers.eax = 0u;
+        recomp_runtime.registers.esp += 4u;
+        return;
+    }
+    const uint32_t args[3] = {character, 1u, 0u};
+    kernel_call_guest(0x000464e0u, args, 3u);
+    if ((recomp_runtime.registers.eax & 0xffu) == 0u) {
+        recomp_runtime.registers.eax = 0u;
+        recomp_runtime.registers.esp += 4u;
+        return;
+    }
+    const uint32_t c_args[2] = {character, costume};
+    kernel_call_guest(0x00056920u, c_args, 2u);
+    recomp_runtime.registers.eax = (recomp_runtime.registers.eax != 0u) ? 1u : 0u;
+    recomp_runtime.registers.esp += 4u;
 }
 
 /* 0x566F0 (character in esi, weapon in edi): the item that unlocks a character's weapon 2-11 (86 + 10 x its
@@ -548,6 +542,7 @@ RecompFunction recomp_sc2_hooks_lookup_manual(uint32_t address)
     case 0x0002abc0u: return sprite_draw;
     case 0x0006a190u: return cell_place;
     case 0x0006b000u: return cursor_move;
+    case 0x000698d0u: return character_available_bonus;
     case 0x000566f0u: return weapon_item;
     case 0x000c4940u: return play_counted;
     case 0x00036a70u: return roster_place;
