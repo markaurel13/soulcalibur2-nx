@@ -48,6 +48,7 @@
 0x00041e74 keep constant         # d3d8_draw_adapter.c:119
 0x00041e78 keep constant         # d3d8_draw_adapter.c:120
 0x00044360 0x000451a0 manual           # sc2_hooks.c:20
+0x000464e0 0x00047320 exact            # sc2_hooks.c:308
 0x00047a0e 0x0004884e manual           # sc2_hooks.c:78
 0x0004e8e4 0x0004f7f4 exact+inside     # sc2_hooks.c:120
 0x0004fef0 0x00050f10 manual           # sc2_menu.cpp:504
@@ -62,6 +63,7 @@
 0x000569b0 0x00057f40 call             # sc2_hooks.c:29
 0x000569f0 0x00057f80 call             # sc2_hooks.c:38
 0x00069890 0x0006ae00 exact            # sc2_guest.cpp:125
+0x000698d0 0x0006ae40 exact            # sc2_hooks.c:299
 0x0006a190 0x0006b780 exact            # sc2_hooks.c:24
 0x0006b000 0x0006c5f0 exact            # sc2_hooks.c:25
 0x0006b380 0x0006c970 exact            # sc2_hooks.c:276
