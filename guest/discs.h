@@ -18,7 +18,7 @@ struct DiscFile {
     Olnk::Reader read;   /* offsets from the file's start */
     uint64_t size = 0;
     std::string game_id; /* the GameCube disc's six-letter ID, the PS2's program name, else empty */
-    /* The disc's program (the GameCube's boot.dol, the PS2's SLUS_206.43; for a
+    /* The disc's program (the Xbox's Default.xbe, the GameCube's boot.dol, the PS2's SLUS_206.43; for a
        root.olk given itself, the file of that name beside it); throws Error
        when it cannot be read. */
     std::function<Bytes()> program;

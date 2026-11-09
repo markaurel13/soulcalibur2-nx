@@ -3,10 +3,15 @@
 #include "texture_pack.h"
 
 #include "bytes.h"
+#include "discs.h"
 #include "textures.h"
+
+#define XXH_INLINE_ALL
+#include "xxhash.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -248,6 +253,38 @@ Dds padded(const Dds &dds, uint32_t canvas_w, uint32_t canvas_h)
     return out;
 }
 
+// The menu font's 16 colours from a palette in the Xbox's program (B, G, R, A words)
+using Palette16 = std::array<Texel, 16>;
+
+Palette16 palette16(const Bytes &program, size_t at)
+{
+    Palette16 p{};
+    for (size_t i = 0; i < 16; ++i)
+        p[i] = Texel{program[at + 4 * i + 2], program[at + 4 * i + 1], program[at + 4 * i], program[at + 4 * i + 3]};
+    return p;
+}
+
+// The sheet in one palette made from the same sheet in another: each texel as a blend of the colours of `to` by how
+// near it is to each of `from` (colour and alpha), so the pack's smoothed edges stay smooth; its alpha kept
+void recolour(Image &img, const Palette16 &from, const Palette16 &to)
+{
+    constexpr float kSpread = 2.0f * 24.0f * 24.0f;
+    for (Texel &t : img.texels) {
+        float weight[16], total = 0.0f;
+        for (int i = 0; i < 16; ++i) {
+            float d = 0.0f;
+            for (int k = 0; k < 4; ++k) d += float(t[k] - from[i][k]) * float(t[k] - from[i][k]);
+            weight[i] = std::exp(-d / kSpread);
+            total += weight[i];
+        }
+        float out[3] = {0.0f, 0.0f, 0.0f};
+        for (int i = 0; i < 16; ++i)
+            for (int k = 0; k < 3; ++k) out[k] += weight[i] * to[i][k];
+        if (total <= 0.0f) continue;
+        for (int k = 0; k < 3; ++k) t[k] = uint8_t(std::lround(std::clamp(out[k] / total, 0.0f, 255.0f)));
+    }
+}
+
 struct Row {
     std::string name, rule;
     uint32_t width = 0, height = 0, stored_w = 0, stored_h = 0;
@@ -283,7 +320,7 @@ std::vector<Row> parse_map(const std::string &text)
 } // namespace
 
 PackImport import_dolphin_pack(const std::string &pack, const std::string &map, const std::string &output,
-    const std::function<void(size_t, size_t)> &progress)
+    const std::string &xbox_disc, const std::function<void(size_t, size_t)> &progress)
 {
     // The pack's images by name (a Dolphin name; "_arb" kept apart by Dolphin's tools is the same texture)
     std::unordered_map<std::string, fs::path> files;
@@ -306,10 +343,46 @@ PackImport import_dolphin_pack(const std::string &pack, const std::string &map, 
         }
         return nullptr;
     };
+    // The menu font's palettes, from the player's Xbox disc (its program), for the colours the pack does not have;
+    // each checked against the map: XXH64 of the palette seeded with the sheet's indices is the Xbox's name
+    Bytes program;
+    if (!xbox_disc.empty()) {
+        try {
+            std::ifstream file(fs::u8path(xbox_disc), std::ios::binary);
+            char magic[4] = {};
+            file.read(magic, 4);
+            if (std::memcmp(magic, "XBEH", 4) == 0) {   // (the Default.xbe itself)
+                file.seekg(0);
+                program.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+            } else {
+                program = open_xbox_root(xbox_disc).program();
+            }
+        } catch (const std::exception &) {
+            program.clear();
+        }
+    }
+    std::unordered_map<std::string, bool> names;
+    for (const Row &r : rows) names.emplace(r.name, true);
+    auto palette_named = [&](const std::string &offset, const std::string &seed, std::string *name) {
+        const size_t at = std::strtoull(offset.c_str(), nullptr, 16);
+        if (program.size() < 1024 || at > program.size() - 1024) return false;
+        char text[17];
+        const uint64_t key = XXH64(program.data() + at, 1024, std::strtoull(seed.c_str(), nullptr, 16));
+        std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(key ? key : 1));
+        *name = text;
+        return true;
+    };
+    // (a font row: its own image, or the grey one and both palettes (the grey's is one of the map's names too))
+    auto recolourable = [&](const Row &r) {
+        if (r.images.size() < 5 || !find(r.images[1])) return false;
+        std::string own, grey;
+        return palette_named(r.images[2][0], r.images[4][0], &own) && own == r.name &&
+               palette_named(r.images[3][0], r.images[4][0], &grey) && names.count(grey);
+    };
     std::vector<const Row *> work;
     PackImport result;
     for (const Row &r : rows) {
-        if (find(r.images[0])) work.push_back(&r);
+        if (find(r.images[0]) || (r.rule == "font" && recolourable(r))) work.push_back(&r);
         else ++result.missing;
     }
     if (work.empty()) throw Error("none of the Soulcalibur II (USA) GameCube pack's textures are in that folder");
@@ -329,14 +402,22 @@ PackImport import_dolphin_pack(const std::string &pack, const std::string &map, 
         for (size_t i; (i = next++) < work.size();) {
             const Row &r = *work[i];
             try {
+                // (a font row whose colour the pack lacks: its grey sheet, recoloured)
+                const fs::path *own = find(r.images[0]);
+                const bool recoloured = !own && r.rule == "font";
                 Dds first;
-                if (!read_dds(*find(r.images[0]), first)) throw Error("unreadable");
+                if (!read_dds(recoloured ? *find(r.images[1]) : *own, first)) throw Error("unreadable");
                 // (a pack's images are a whole number of times the original's size)
                 const uint32_t scale = std::max(1u, first.width / std::max(1u, r.width));
                 const uint32_t canvas_w = r.stored_w * scale, canvas_h = r.stored_h * scale;
                 Dds made;
                 bool partial = false;
-                if (r.rule == "copy") {
+                if (recoloured) {
+                    Image img = decode(first);
+                    recolour(img, palette16(program, std::strtoull(r.images[3][0].c_str(), nullptr, 16)),
+                             palette16(program, std::strtoull(r.images[2][0].c_str(), nullptr, 16)));
+                    made = padded(encode(std::move(img), 1), canvas_w, canvas_h);
+                } else if (r.rule == "copy" || r.rule == "font") {
                     made = padded(first, canvas_w, canvas_h);
                 } else {
                     Image a = decode(first), b;

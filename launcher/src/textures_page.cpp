@@ -66,20 +66,21 @@ void take(launcher::PageContext &page, const std::string &path) {
     page.prefs.save();
 }
 
-void start_import(const std::string &pack, const std::filesystem::path &output) {
+void start_import(const std::string &pack, const std::filesystem::path &output, const std::string &xbox_disc) {
     State &s = state();
     if (s.importing) return;
     if (s.worker.joinable()) s.worker.join();
     s.importing = true;
     s.done = 0;
     s.total = 1;
-    s.worker = std::thread([pack, output] {
+    s.worker = std::thread([pack, output, xbox_disc] {
         State &s = state();
         std::string result;
         bool failed = false;
         try {
+            // (the game's disc: the menu font's colours the pack does not have, from its palettes)
             const guest::PackImport done = guest::import_dolphin_pack(pack, guest::kDolphinTextureMap,
-                output.u8string(), [&](size_t d, size_t t) {
+                output.u8string(), xbox_disc, [&](size_t d, size_t t) {
                     s.done = d;
                     s.total = t;
                 });
@@ -163,7 +164,7 @@ void TexturesPage(launcher::PageContext &page) {
             ui::progress_bar(ImGui::GetID("texture_progress"),
                              float(s.done) / float(std::max<size_t>(1, s.total)), px(130), px(8));
         } else if (ui::button(count ? "Import again##textures" : "Import##textures", Kind::Primary, 130.0f, can_import)) {
-            start_import(pack, output_folder(page.folder));
+            start_import(pack, output_folder(page.folder), page.prefs.get("game", "disc"));
         }
     });
 #endif

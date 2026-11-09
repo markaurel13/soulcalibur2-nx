@@ -3,8 +3,9 @@
    GameCube disc, .iso or .ciso) or Heihachi (the PlayStation 2 disc, .iso) in
    the guest's place, from the player's Xbox disc (image, or its root.olk).
    The launcher does the same; this is for tests and scripts.
-   sc2_guest --import-textures PACK OUTPUT [MAP]: a Dolphin texture pack (its folder) made into the game's
-   (texture_pack.h), by the built-in map or MAP. */
+   sc2_guest --import-textures PACK OUTPUT [MAP] [--xbox DISC]: a Dolphin texture pack (its folder) made into the
+   game's (texture_pack.h), by the built-in map or MAP; DISC (the Xbox disc image, or its Default.xbe) gives the
+   menu font's colours the pack does not have. */
 #include "build.h"
 #include "texture_pack.h"
 #include "sound.h"
@@ -42,14 +43,18 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    if ((argc == 4 || argc == 5) && std::strcmp(argv[1], "--import-textures") == 0) {
+    if (argc >= 4 && std::strcmp(argv[1], "--import-textures") == 0) {
         try {
-            std::string map = guest::kDolphinTextureMap;
-            if (argc == 5) {
-                std::ifstream file(argv[4]);
-                map.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+            std::string map = guest::kDolphinTextureMap, xbox;
+            for (int i = 4; i < argc; ++i) {
+                if (std::strcmp(argv[i], "--xbox") == 0 && i + 1 < argc) {
+                    xbox = argv[++i];
+                } else {
+                    std::ifstream file(argv[i]);
+                    map.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+                }
             }
-            const guest::PackImport done = guest::import_dolphin_pack(argv[2], map, argv[3], [](size_t d, size_t t) {
+            const guest::PackImport done = guest::import_dolphin_pack(argv[2], map, argv[3], xbox, [](size_t d, size_t t) {
                 if (d % 64 == 0 || d == t) std::fprintf(stderr, "\r%zu/%zu", d, t);
             });
             std::fprintf(stderr, "\n%zu textures written (%zu from one of two images), %zu not in the pack, %zu unreadable\n",
