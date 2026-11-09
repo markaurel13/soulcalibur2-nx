@@ -20,10 +20,12 @@ struct PackImport {
 };
 
 /* Every DDS in `pack` (any depth of folders; a Dolphin pack's tex1_..., with or without _arb) the map names,
-   written to `output` (made, and emptied of what an earlier import wrote). `progress` is told (done, total) from
-   the threads doing the work. Throws guest::Error when the pack holds none of the map's images. */
+   written to `output` (made, and emptied of what an earlier import wrote). `xbox_disc` (the game's disc image, or
+   its Default.xbe or root.olk; may be empty) gives the menu font's palettes, for the colours of it the pack does not
+   have. `progress` is told (done, total) from the threads doing the work. Throws guest::Error when the pack holds
+   none of the map's images. */
 PackImport import_dolphin_pack(const std::string &pack, const std::string &map, const std::string &output,
-    const std::function<void(size_t, size_t)> &progress = {});
+    const std::string &xbox_disc = {}, const std::function<void(size_t, size_t)> &progress = {});
 
 /* The map built into the program (texture_map.cpp, generated from tools/textures/GRSEAF.map) */
 extern const char *const kDolphinTextureMap;

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Checks a texture map against a Dolphin pack: each mapped Xbox texture made from the pack by its rule, scaled down
 to the Xbox's size, against the Xbox's own pixels. Prints the error per rule (mean absolute difference per channel,
-0-255) and the worst textures.
+0-255) and the worst textures. (The menu font's rows are left out: no bank holds the font, the program makes it.)
 
   check_map.py XBOX_ROOT_OLK MAP PACK_FOLDER [SAMPLES]
 

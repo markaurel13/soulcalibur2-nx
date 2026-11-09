@@ -5,6 +5,8 @@ the game stores it, the P8 palette after it).
 
   build_map.py OUTPUT_MAP GAMECUBE_DISC_OR_ROOT_OLK XBOX_ROOT_OLK [GUESTS_ROOT_OLK]
 
+The menu font needs the GameCube disc image (its main.dol) and the Xbox's Default.xbe beside its root.olk.
+
 With the guests' file (the launcher's guest/guests-root.olk, built from the same GameCube disc) too, Link's
 textures are in the map: the guest converter keeps the GameCube's CMPR blocks, so they are found as any other's,
 and it makes the same bytes for everyone with the same discs and release (GUESTS_VERSION). Rebuild the map when
@@ -24,6 +26,9 @@ that much larger than the stored size.
            Xbox's DXT3 or DXT5)
   palette  a C8/C4 the GameCube draws through two IA8 palettes (its colours' G, R and A, B halves, each IA8, so each
            pack image is one half: intensity R and alpha G, then intensity B and alpha A): the Xbox's P8
+  font     the menu font (below): the pack's image in that colour, or else its grey one recoloured; then the two
+           Xbox palettes' places in Default.xbe (hex file offsets), read from the player's disc to recolour, and the
+           hash of the sheet's indices (each palette's XXH64 seeded with it is its Xbox name: the importer's check)
 A pack name may give alternatives (a|b), the palette ranges Dolphin versions hash differently.
 
 How a GameCube texture finds the Xbox's: by content, anywhere: a CMPR colour image is the same 4x4 blocks as the
@@ -108,12 +113,60 @@ class GameCubeDisc:
         raise FileNotFoundError(wanted)
 
 
+    def program(self):
+        """main.dol (its text and data sections, as the file holds them)."""
+        at, = struct.unpack(">I", self.read(0x420, 4))
+        head = self.read(at, 0x100)
+        offsets, sizes = struct.unpack_from(">18I", head, 0), struct.unpack_from(">18I", head, 0x90)
+        return self.read(at, max(o + s for o, s in zip(offsets, sizes)))
+
+
 def gamecube_root(path):
     with open(path, "rb") as f:
         head = f.read(8)
     if head[4:8] == b"olnk":
         return open(path, "rb").read()
     return GameCubeDisc(path).file("root.olk")
+
+
+# ---- The menu font ------------------------------------------------------------------------------------------------
+#
+# The menus' lettering is one 512x696 sheet of 16 shades, made by the program (no bank holds it), drawn in one of the
+# program's palettes: the GameCube's a C4 through a 16-colour RGB5A3 palette (a table of them in main.dol), the
+# Xbox's a 512x1024 P8 with the same indices (the image at the top) through a 1 KB palette (a table in Default.xbe;
+# 16 colours used). The Xbox's table has one more palette at its start (a copy of the next), so Xbox palette n is the
+# GameCube's n - 1. The pack has the sheet in 9 of the GameCube's colours; the rest are made by the importer from
+# the grey one ("font" rule), recoloured with the two Xbox palettes, which it reads from the player's Xbox disc.
+#
+# The sheets' own hashes are fixed (measured from the program's uploads): the GameCube's texture hash in Dolphin's
+# names, and XXH64 of the Xbox's swizzled indices, which the Xbox's name is XXH64 of the palette seeded with.
+FONT_GC_TEXTURE = 0xfceef5b5835ba075
+FONT_XBOX_INDICES = 0x90c8d1cc37e8cbbd
+FONT_GC_TABLE = 0x21de20      # main.dol (file offset): 32-byte palettes
+FONT_XBOX_TABLE = 0x1966e0    # Default.xbe (file offset): 1 KB palettes
+FONT_PALETTES = 17            # Xbox palettes
+FONT_GREY = 1                 # the Xbox palette the pack's grey sheet is (the GameCube's 0)
+
+
+def font_rows(xbe, dol):
+    """The menu font's rows: {xbox name: ("font", w, h, stored, [pack name, grey pack name, palette, grey palette,
+    indices])} (palettes as Default.xbe file offsets in hex; indices the hash the names are seeded with, so the importer
+    can check the palettes it reads), or {} when the program files are not the USA discs'."""
+    def names(n):
+        tlut = dol[FONT_GC_TABLE + 32 * (n - 1):FONT_GC_TABLE + 32 * n]
+        return "tex1_512x696_%016x_%016x_8" % (FONT_GC_TEXTURE, xxhash.xxh64(tlut).intdigest())
+    rows = {}
+    for n in range(FONT_PALETTES):
+        at = FONT_XBOX_TABLE + 0x400 * n
+        name = "%016x" % (xxhash.xxh64(xbe[at:at + 0x400], seed=FONT_XBOX_INDICES).intdigest() or 1)
+        rows.setdefault(name, ("font", 512, 696, (512, 1024),
+                               [names(max(n, 1)), names(FONT_GREY), "%x" % at, "%x" % (FONT_XBOX_TABLE + 0x400 * FONT_GREY),
+                                "%016x" % FONT_XBOX_INDICES]))
+    # (the grey sheet's name, as the USA disc's program uploads it: other programs have their palettes elsewhere)
+    return rows if FONT_GREY_NAME in rows else {}
+
+
+FONT_GREY_NAME = "2c99ed2780cf481a"
 
 
 # ---- Dolphin's names ----------------------------------------------------------------------------------------------
@@ -334,6 +387,16 @@ def main(output, gamecube_path, *xbox_paths):
     rows = {}
     for path in xbox_paths:
         rows.update(map_rows(path, gc_data))
+    # The menu font (Default.xbe beside the Xbox's root.olk; main.dol from the GameCube disc image)
+    xbe = os.path.join(os.path.dirname(os.path.abspath(xbox_paths[0])), "Default.xbe")
+    with open(gamecube_path, "rb") as f:
+        disc_image = f.read(8)[4:8] != b"olnk"
+    if disc_image and os.path.exists(xbe):
+        font = font_rows(open(xbe, "rb").read(), GameCubeDisc(gamecube_path).program())
+        print("menu font: %d Xbox textures" % len(font) if font else "menu font: not the USA discs' programs")
+        rows.update(font)
+    else:
+        print("menu font: needs the GameCube disc image and Default.xbe beside the Xbox's root.olk")
     with open(output, "w") as out:
         out.write("# Soulcalibur II Recomp texture map: Dolphin (GRSEAF) names to the game's (tools/textures/build_map.py)\n")
         for name in sorted(rows):

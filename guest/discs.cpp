@@ -111,6 +111,7 @@ DiscFile open_xbox_root(const std::string &path)
         out.size = uint64_t(ftello(file->f));
 #endif
         out.read = [file](uint64_t o, size_t n) { return file->read(o, n); };
+        out.program = [path]() { return beside(path, "Default.xbe"); };
         return out;
     }
     if (!recomp_disc_image_open(path.c_str())) throw Error("not an Xbox disc image: " + path);
@@ -121,6 +122,14 @@ DiscFile open_xbox_root(const std::string &path)
     out.read = [base](uint64_t o, size_t n) {
         Bytes b(n);
         b.resize(recomp_disc_image_read(base + o, b.data(), n));
+        return b;
+    };
+    RecompDiscImageEntry xbe;
+    const bool has_xbe = recomp_disc_image_lookup("default.xbe", &xbe) && !xbe.directory;
+    out.program = [has_xbe, xbe]() {
+        if (!has_xbe) throw Error("the Xbox disc has no default.xbe");
+        Bytes b(size_t(xbe.size));
+        b.resize(recomp_disc_image_read(xbe.offset, b.data(), b.size()));
         return b;
     };
     return out;

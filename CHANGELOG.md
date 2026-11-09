@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **HD menu lettering** ([#56](https://github.com/tmcleroy/soulcalibur2-recomp/issues/56)): the HD texture pack
+  import now covers the menus' lettering (the titles, choices and help lines on every screen), in all 16 of its
+  colours: 9 from the pack, the rest made from the pack's grey lettering in the game's own colours, read from your
+  Xbox disc. Import the pack again on the Textures page to get it.
 - **Weapon swing sounds**: the whoosh of a swing is heard again. Its pitch moves every frame, and each change started
   the sound over on silence, so it never played (on every system).
 - **Music repeating a phrase** ([#32](https://github.com/tmcleroy/soulcalibur2-recomp/issues/32),
