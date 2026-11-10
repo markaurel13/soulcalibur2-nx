@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-beta.1
 
+The bonus fighters unlock as on the Xbox, the menus' lettering in HD from the texture pack, weapon swing sounds, and
+fixes for stuttering and repeating sound. Both players need this version to play each other online.
+
+- **Assassin, Berserker and Lizardman** ([#47](https://github.com/tmcleroy/soulcalibur2-recomp/issues/47)): once
+  unlocked (in Weapon Master), they can be picked in every mode, and their Arcade plays to the end. The character
+  select screen's small portraits no longer show a seam and a doubled step beside Random in widescreen.
+- **Sound stuttering** ([#54](https://github.com/tmcleroy/soulcalibur2-recomp/issues/54)): sound could stick on one
+  short piece and repeat it for several seconds (most often after a pause, in busy fights). It plays on now.
 - **HD menu lettering** ([#56](https://github.com/tmcleroy/soulcalibur2-recomp/issues/56)): the HD texture pack
   import now covers the menus' lettering (the titles, choices and help lines on every screen), in all 16 of its
   colours: 9 from the pack, the rest made from the pack's grey lettering in the game's own colours, read from your
