@@ -99,11 +99,56 @@ void __wrap_recomp_d3d_wait_vblank(void) {
     }
 }
 
+
+// ---- Fase 0 (telemetria): coste de recomp_lookup_manual / dispatch indirecto ----
+// Cada RECOMP_ABI_CALL del codigo generado llama a recomp_lookup_manual; un resultado NULL
+// (funcion de juego normal) NO se cachea y recorre toda la cadena de 8 tablas.
+// Se publica un pseudo-"sub_" para que FuncProf separe este coste del de las funciones llamantes.
+#include "sc2_prof.h"
+static uint32_t s_lk_calls = 0, s_lk_null = 0, s_ind_calls = 0;
+RecompFunction __real_recomp_lookup_manual(uint32_t guest_address);
+// Fase 1: cache negativo. Las 8 tablas de la cadena son estaticas (switch con constantes), salvo
+// free_camera (VIEW_BUILD/VIEW_BUILD_LEVEL, dependiente de enabled()): esas dos direcciones jamas se marcan nulas.
+// Bitmap de 256 KB sobre los primeros 2 MB de codigo guest.
+static uint8_t s_lk_neg[0x200000u / 8u];
+RecompFunction __wrap_recomp_lookup_manual(uint32_t guest_address) {
+    ++s_lk_calls;
+    if (guest_address < 0x200000u && (s_lk_neg[guest_address >> 3] & (1u << (guest_address & 7u)))) {
+        ++s_lk_null;
+        return NULL;
+    }
+    uint32_t prev = sc2_prof_cur;
+    sc2_prof_cur = 0x0017F000u;
+    RecompFunction fn = __real_recomp_lookup_manual(guest_address);
+    sc2_prof_cur = prev;
+    if (fn == NULL && guest_address < 0x200000u &&
+        guest_address != 0x0001CC50u && guest_address != 0x0001CCB0u)
+        s_lk_neg[guest_address >> 3] |= (uint8_t)(1u << (guest_address & 7u));
+    return fn;
+}
+void __real_recomp_dispatch_indirect_site(uint32_t a, uint32_t e, const char *m, int l);
+void __wrap_recomp_dispatch_indirect_site(uint32_t a, uint32_t e, const char *m, int l) {
+    ++s_ind_calls;
+    __real_recomp_dispatch_indirect_site(a, e, m, l);
+}
+static void sc2_phase0_report(void) {
+    static uint32_t frames = 0;
+    if (++frames < 120u) return;
+    FILE *f = Switch_GetMainLogFile();
+    if (f) {
+        fprintf(f, "[Phase0] per-frame: lookup_manual calls=%u (negcache-hits(NULL)=%u) indirect_calls=%u\n",
+                s_lk_calls / 120u, s_lk_null / 120u, s_ind_calls / 120u);
+        fflush(f);
+    }
+    frames = 0; s_lk_calls = s_lk_null = s_ind_calls = 0;
+}
+
 // ---- Wrap recomp_d3d_wait_present ----
 void __real_recomp_d3d_wait_present(void);
 void __wrap_recomp_d3d_wait_present(void) {
     uint64_t t0 = armGetSystemTick();
     __real_recomp_d3d_wait_present();
+    sc2_phase0_report();
     uint64_t dt = armGetSystemTick() - t0;
     mutexLock(&s_prof_mutex);
     s_prof.t_present_wait += dt;

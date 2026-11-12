@@ -109,6 +109,8 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_sub_23c30.c
     src/switch_sub_24720.c
     src/switch_sub_2b670.c
+    src/switch_sub_240c0.c
+    src/switch_math_neon.c
     src/switch_bone_neon.c
 )
 
@@ -246,6 +248,11 @@ target_link_libraries(soulcalibur2
 target_link_options(soulcalibur2
     PRIVATE
     -Wl,--wrap=sub_0002B670
+    -Wl,--wrap=sub_000240C0
+    -Wl,--wrap=sub_00011000
+    -Wl,--wrap=sub_00011250
+    -Wl,--wrap=sub_000126A0
+    -Wl,--wrap=sub_00145A64
     -Wl,--wrap=recomp_d3d8_submit
     -Wl,--wrap=recomp_dsound_buffers_pump
     -Wl,--wrap=recomp_hrtf_render
@@ -253,6 +260,8 @@ target_link_options(soulcalibur2
     -Wl,--wrap=recomp_d3d_wait_vblank
     -Wl,--wrap=recomp_d3d_wait_present
     -Wl,--wrap=recomp_lookup
+    -Wl,--wrap=recomp_lookup_manual
+    -Wl,--wrap=recomp_dispatch_indirect_site
     -Wl,--wrap=sc2_x87_sin
     -Wl,--wrap=sc2_x87_cos
     -Wl,--wrap=sc2_x87_atan2
