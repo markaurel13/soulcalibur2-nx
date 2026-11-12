@@ -43,6 +43,10 @@ foreach(_name IN LISTS _CHUNK_NAMES)
             if(_name STREQUAL "recomp_0000.c")
                 string(REPLACE "void sub_00023C30(void)\n{" "void __real_sub_00023C30(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00024720(void)\n{" "void __real_sub_00024720(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_000239D0(void)\n{" "void __real_sub_000239D0(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00023A60(void)\n{" "void __real_sub_00023A60(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00023AF0(void)\n{" "void __real_sub_00023AF0(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00023B90(void)\n{" "void __real_sub_00023B90(void)\n{" _CONTENT "${_CONTENT}")
             endif()
             if(SC2_FUNC_PROFILE)
                 string(REGEX REPLACE "void (sub_([0-9A-F]+))\\(void\\)\n\\{\n" "void \\1(void)\n{\n    SC2_PROF_SCOPE(0x\\2u);\n" _CONTENT "${_CONTENT}")
@@ -104,6 +108,7 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_profiler.cpp
     src/switch_sub_23c30.c
     src/switch_sub_24720.c
+    src/switch_bone_neon.c
 )
 
 set(PROGRAM_SOURCES
