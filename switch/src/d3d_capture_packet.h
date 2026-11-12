@@ -5,7 +5,6 @@
 
 #include <cstddef>
 #include <new>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -14,7 +13,7 @@ public:
     enum Kind : uint32_t { COMMAND, RELEASE, REPORT, INVALIDATE };
     struct Record { Kind kind; uint32_t base; uint32_t size; };
 
-    D3dCapturePacket() = default;
+    D3dCapturePacket();
     D3dCapturePacket(const D3dCapturePacket &) = delete;
     D3dCapturePacket &operator=(const D3dCapturePacket &) = delete;
     D3dCapturePacket(D3dCapturePacket &&) noexcept = default;
@@ -55,14 +54,12 @@ private:
         alignas(8) RecompD3dPresenterCommand value;
         size_t offsets[8];
     };
-    struct Span { size_t size; size_t offset; };
 
     RecompD3dPresenterError addRecord(Kind kind, uint32_t base, uint32_t size);
 
     std::vector<Entry> entries_;
     std::vector<CapturedCommand> commands_;
     std::vector<uint64_t, NoInitAllocator<uint64_t>> payload_;
-    std::unordered_multimap<uint64_t, Span> spans_;
     bool sealed_ = false;
 };
 

@@ -4,6 +4,7 @@
 #include <switch.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -33,7 +34,7 @@ struct PresenterThread {
     bool started = false;
     bool shutdown = false;
     RecompD3dPresenterError created = RECOMP_D3D_PRESENTER_OK;
-    RecompD3dPresenterError status = RECOMP_D3D_PRESENTER_OK;
+    std::atomic<RecompD3dPresenterError> status{RECOMP_D3D_PRESENTER_OK};
     RecompD3dPresenterError destroyed = RECOMP_D3D_PRESENTER_OK;
 
     RecompD3dPresenter *backend_ptr = nullptr;
@@ -59,19 +60,16 @@ RecompD3dPresenterError validate(RecompD3dPresenter *presenter)
         ? RECOMP_D3D_PRESENTER_OK : RECOMP_D3D_PRESENTER_WRONG_THREAD;
 }
 
-RecompD3dPresenterError status(PresenterThread &thread)
+inline RecompD3dPresenterError status(PresenterThread &thread)
 {
-    std::lock_guard<std::mutex> lock(thread.mutex);
-    return thread.status;
+    return thread.status.load(std::memory_order_relaxed);
 }
 
 void fail(PresenterThread &thread, RecompD3dPresenterError error)
 {
     if (error == RECOMP_D3D_PRESENTER_OK) return;
-    {
-        std::lock_guard<std::mutex> lock(thread.mutex);
-        if (thread.status == RECOMP_D3D_PRESENTER_OK) thread.status = error;
-    }
+    RecompD3dPresenterError expected = RECOMP_D3D_PRESENTER_OK;
+    thread.status.compare_exchange_strong(expected, error, std::memory_order_release);
     thread.changed.notify_all();
 }
 
@@ -403,8 +401,9 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presen
     }
     thread.wake_cv.notify_one();
     thread.worker.join();
-    const auto pending = thread.status == RECOMP_D3D_PRESENTER_CLOSED
-        ? RECOMP_D3D_PRESENTER_OK : thread.status;
+    const auto cur_status = thread.status.load();
+    const auto pending = cur_status == RECOMP_D3D_PRESENTER_CLOSED
+        ? RECOMP_D3D_PRESENTER_OK : cur_status;
     const auto destroyed = thread.destroyed != RECOMP_D3D_PRESENTER_OK
         ? thread.destroyed : pending;
     delete active_thread;

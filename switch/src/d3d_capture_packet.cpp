@@ -17,18 +17,6 @@ constexpr const void *Draw::*pointer_fields[] = {
 constexpr uint64_t max_span_bytes = 64u * 1024u * 1024u;
 constexpr size_t null_offset = SIZE_MAX;
 
-uint64_t spanKey(const void *source, size_t size)
-{
-    uint64_t key = (reinterpret_cast<uintptr_t>(source) * 0x9e3779b97f4a7c15ull) ^ size;
-    const auto *bytes = static_cast<const unsigned char *>(source);
-    for (size_t i = 0u; size != 0u && i < 8u; ++i) {
-        uint64_t word = 0u;
-        std::memcpy(&word, bytes + (size <= 8u ? 0u : (size - 8u) * i / 7u), size < 8u ? size : 8u);
-        key = (key ^ word) * 0x100000001b3ull;
-    }
-    return key;
-}
-
 void copyRange(Draw &to, const Draw &from, size_t begin, size_t end)
 {
     std::memcpy(reinterpret_cast<char *>(&to) + begin, reinterpret_cast<const char *>(&from) + begin, end - begin);
@@ -57,6 +45,14 @@ void copyCommand(RecompD3dPresenterCommand &to, const RecompD3dPresenterCommand 
 }
 
 } // namespace
+
+D3dCapturePacket::D3dCapturePacket()
+{
+    // Pre-reserve buffers to eliminate reallocations during frame submission
+    entries_.reserve(1024);
+    commands_.reserve(1024);
+    payload_.reserve(1024 * 1024); // 8 MB preallocated
+}
 
 RecompD3dPresenterError D3dCapturePacket::add(
     const RecompD3dPresenterCommand &command)
@@ -87,8 +83,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     const size_t old_payload_size = payload_.size();
     const size_t old_command_count = commands_.size();
-    uint64_t inserted_keys[8]{};
-    size_t inserted_count = 0u;
+    const size_t old_entry_count = entries_.size();
     try {
         CapturedCommand &captured = commands_.emplace_back();
         copyCommand(captured.value, command);
@@ -101,25 +96,15 @@ RecompD3dPresenterError D3dCapturePacket::add(
                 if (source == nullptr || (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE && i >= 2u)) continue;
 
                 const size_t size = static_cast<size_t>(sizes[i]);
-                const uint64_t key = spanKey(source, size);
-                const auto range = spans_.equal_range(key);
-                for (auto it = range.first; it != range.second; ++it) {
-                    if (it->second.size == size && (size == 0u ||
-                        std::memcmp(source, payload_.data() + it->second.offset, size) == 0)) {
-                        captured.offsets[i] = it->second.offset;
-                        break;
-                    }
-                }
-                if (captured.offsets[i] != null_offset) continue;
+                if (size == 0u) continue;
 
+                // High-performance direct linear copy: eliminate hash table lookups and memcmp
                 const size_t offset = payload_.size();
-                const size_t words = size == 0u ? 1u : (size + 7u) / 8u;
+                const size_t words = (size + 7u) / 8u;
                 if (words > payload_.max_size() - offset) throw std::length_error("capture payload");
                 payload_.resize(offset + words);
                 payload_[offset + words - 1u] = 0u;
-                if (size != 0u) std::memcpy(payload_.data() + offset, source, size);
-                spans_.emplace(key, Span{size, offset});
-                inserted_keys[inserted_count++] = key;
+                std::memcpy(payload_.data() + offset, source, size);
                 captured.offsets[i] = offset;
             }
         }
@@ -129,13 +114,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
     } catch (const std::length_error &) {
     }
 
-    for (size_t i = 0u; i < inserted_count; ++i) {
-        const auto range = spans_.equal_range(inserted_keys[i]);
-        for (auto it = range.first; it != range.second;) {
-            if (it->second.offset >= old_payload_size) it = spans_.erase(it);
-            else ++it;
-        }
-    }
+    entries_.resize(old_entry_count);
     commands_.resize(old_command_count);
     payload_.resize(old_payload_size);
     return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
@@ -204,7 +183,6 @@ void D3dCapturePacket::clear()
     entries_.clear();
     commands_.clear();
     payload_.clear();
-    spans_.clear();
     sealed_ = false;
 }
 
