@@ -23,10 +23,27 @@ static uint64_t s_cull_culled_count = 0;
 static uint64_t s_cull_rendered_count = 0;
 extern FILE* Switch_GetMainLogFile(void);
 
+// Cached D3D dispatch function pointers (bypasses recomp_dispatch_indirect_site)
+static RecompFunction s_fn_set_vertex_shader = NULL;
+static RecompFunction s_fn_resource_register = NULL;
+static RecompFunction s_fn_set_stream_source = NULL;
+static RecompFunction s_fn_draw_indexed = NULL;
+
+static inline void init_d3d_cached_fns(void)
+{
+    if (__builtin_expect(!s_fn_set_vertex_shader, 0)) {
+        s_fn_set_vertex_shader = recomp_lookup_manual(0x00151DF0u);
+        s_fn_resource_register = recomp_lookup_manual(0x00153280u);
+        s_fn_set_stream_source = recomp_lookup_manual(0x00151A10u);
+        s_fn_draw_indexed = recomp_lookup_manual(0x00152D50u);
+    }
+}
+
 void sub_00024720(void)
 {
     SC2_PROF_SCOPE(0x00024720u);
     s_cull_total_calls++;
+    init_d3d_cached_fns();
 
     if ((s_cull_total_calls % 1000) == 0) {
         FILE* f = Switch_GetMainLogFile();
@@ -113,7 +130,7 @@ loc_000247BB: ;
     g_eflags = (g_eflags & ~0x8C5u) | ((_cf) ? 0x1u : 0u);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000247C4u); RECOMP_ABI_CALL(0x00023300u, sub_00023300);
+    PUSH32(esp, 0x000247C4u); sub_00023300();
     _cf = g_eflags & 1u;
 
 loc_000247C4: ;
@@ -130,7 +147,7 @@ loc_000247CF: ;
     g_eflags = (g_eflags & ~0x8C5u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u) | ((RECOMP_PARITY8((_fa) - (_fb))) ? 0x4u : 0u) | ((CMP_EQ(_fa, _fb)) ? 0x40u : 0u) | (((((uint8_t)((uint8_t)(_fas) - (uint8_t)(_fbs)) >> 7) != 0)) ? 0x80u : 0u) | (((((uint8_t)(((_fa) ^ (_fb)) & ((_fa) ^ ((_fa) - (_fb)))) >> 7) != 0)) ? 0x800u : 0u);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000247D8u); RECOMP_ABI_CALL(0x000240C0u, sub_000240C0);
+    PUSH32(esp, 0x000247D8u); sub_000240C0();
     _cf = g_eflags & 1u;
 
 loc_000247D8: ;
@@ -150,13 +167,11 @@ loc_000247E1: ;
 
 loc_000247E9: ;
     eax = MEM32(0x38D698);
-    { uint32_t _icall_esp = g_esp;
     PUSH32(esp, eax);
     g_eflags = (g_eflags & ~0x8C5u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u) | ((RECOMP_PARITY8((_fa) - (_fb))) ? 0x4u : 0u) | ((CMP_EQ(_fa, _fb)) ? 0x40u : 0u) | (((((uint8_t)((uint8_t)(_fas) - (uint8_t)(_fbs)) >> 7) != 0)) ? 0x80u : 0u) | (((((uint8_t)(((_fa) ^ (_fb)) & ((_fa) ^ ((_fa) - (_fb)))) >> 7) != 0)) ? 0x800u : 0u);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000247F4u); RECOMP_ICALL_SAFE(0x00151DF0u, _icall_esp);
-    }
+    PUSH32(esp, 0x000247F4u); s_fn_set_vertex_shader();
     _cf = g_eflags & 1u;
 
 loc_000247F4: ;
@@ -168,7 +183,7 @@ loc_000247F4: ;
     PUSH32(esp, 0);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00024808u); RECOMP_ABI_CALL(0x00160C6Eu, sub_00160C6E);
+    PUSH32(esp, 0x00024808u); sub_00160C6E();
     _cf = g_eflags & 1u;
 
 loc_00024808: ;
@@ -180,41 +195,35 @@ loc_00024808: ;
     PUSH32(esp, 0);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0002481Cu); RECOMP_ABI_CALL(0x00160C6Eu, sub_00160C6E);
+    PUSH32(esp, 0x0002481Cu); sub_00160C6E();
     _cf = g_eflags & 1u;
 
 loc_0002481C: ;
     ecx = MEM32(0x38C1F8);
     edx = MEM32(esi + ecx * 4 + 0x18);
-    { uint32_t _icall_esp = g_esp;
     PUSH32(esp, edx);
     PUSH32(esp, 0x38C680);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00024831u); RECOMP_ICALL_SAFE(0x00153280u, _icall_esp);
-    }
+    PUSH32(esp, 0x00024831u); s_fn_resource_register();
     _cf = g_eflags & 1u;
 
 loc_00024831: ;
     eax = MEM32(esi + 0x14);
-    { uint32_t _icall_esp = g_esp;
     PUSH32(esp, eax);
     PUSH32(esp, 0x38C1FC);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0002483Fu); RECOMP_ICALL_SAFE(0x00153280u, _icall_esp);
-    }
+    PUSH32(esp, 0x0002483Fu); s_fn_resource_register();
     _cf = g_eflags & 1u;
 
 loc_0002483F: ;
-    { uint32_t _icall_esp = g_esp;
     PUSH32(esp, 0x20);
     PUSH32(esp, 0x38C680);
     PUSH32(esp, 0);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0002484Du); RECOMP_ICALL_SAFE(0x00151A10u, _icall_esp);
-    }
+    PUSH32(esp, 0x0002484Du); s_fn_set_stream_source();
     _cf = g_eflags & 1u;
 
 loc_0002484D: ;
@@ -225,13 +234,11 @@ loc_0002484D: ;
 
 loc_00024858: ;
     ecx = MEM32(0x38D694);
-    { uint32_t _icall_esp = g_esp;
     PUSH32(esp, ecx);
     g_eflags = (g_eflags & ~0x8C5u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u) | ((RECOMP_PARITY8((_fa) - (_fb))) ? 0x4u : 0u) | ((CMP_EQ(_fa, _fb)) ? 0x40u : 0u) | (((((uint8_t)((uint8_t)(_fas) - (uint8_t)(_fbs)) >> 7) != 0)) ? 0x80u : 0u) | (((((uint8_t)(((_fa) ^ (_fb)) & ((_fa) ^ ((_fa) - (_fb)))) >> 7) != 0)) ? 0x800u : 0u);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00024864u); RECOMP_ICALL_SAFE(0x00151DF0u, _icall_esp);
-    }
+    PUSH32(esp, 0x00024864u); s_fn_set_vertex_shader();
     _cf = g_eflags & 1u;
 
 loc_00024864: ;
@@ -243,18 +250,16 @@ loc_00024864: ;
     PUSH32(esp, 0);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00024878u); RECOMP_ABI_CALL(0x00160C6Eu, sub_00160C6E);
+    PUSH32(esp, 0x00024878u); sub_00160C6E();
     _cf = g_eflags & 1u;
 
 loc_00024878: ;
     edx = MEM32(esi + 0x14);
-    { uint32_t _icall_esp = g_esp;
     PUSH32(esp, edx);
     PUSH32(esp, 0x38C680);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00024886u); RECOMP_ICALL_SAFE(0x00153280u, _icall_esp);
-    }
+    PUSH32(esp, 0x00024886u); s_fn_resource_register();
     _cf = g_eflags & 1u;
 
 loc_00024886: ;
@@ -265,9 +270,7 @@ loc_00024886: ;
 loc_0002488F: ;
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    { uint32_t _icall_esp = g_esp;
-    PUSH32(esp, 0x00024894u); RECOMP_ICALL_SAFE(0x00151A10u, _icall_esp);
-    }
+    PUSH32(esp, 0x00024894u); s_fn_set_stream_source();
     _cf = g_eflags & 1u;
 
 loc_00024894: ;
@@ -281,15 +284,13 @@ loc_00024894: ;
 loc_0002489A: ;
     eax = MEM32(esi + 0x10);
     ecx = MEM32(esi + 4);
-    { uint32_t _icall_esp = g_esp;
     PUSH32(esp, eax);
     PUSH32(esp, ecx);
     PUSH32(esp, 5);
     g_eflags = (g_eflags & ~0x8C5u) | ((CMP_B(_fa & _fb, 0)) ? 0x1u : 0u) | ((RECOMP_PARITY8((_fa) & (_fb))) ? 0x4u : 0u) | ((TEST_Z(_fa, _fb)) ? 0x40u : 0u) | ((TEST_S(_fas, _fbs)) ? 0x80u : 0u);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000248A9u); RECOMP_ICALL_SAFE(0x00152D50u, _icall_esp);
-    }
+    PUSH32(esp, 0x000248A9u); s_fn_draw_indexed();
     _cf = g_eflags & 1u;
 
 loc_000248A9: ;
@@ -302,15 +303,13 @@ loc_000248A9: ;
 loc_000248AF: ;
     edx = MEM32(esi + 0x10);
     eax = MEM32(esi + 4);
-    { uint32_t _icall_esp = g_esp;
     PUSH32(esp, edx);
     PUSH32(esp, eax);
     PUSH32(esp, 6);
     g_eflags = (g_eflags & ~0x8C5u) | ((CMP_B(_fa & _fb, 0)) ? 0x1u : 0u) | ((RECOMP_PARITY8((_fa) & (_fb))) ? 0x4u : 0u) | ((TEST_Z(_fa, _fb)) ? 0x40u : 0u) | ((TEST_S(_fas, _fbs)) ? 0x80u : 0u);
     g_ebp = ebp;
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000248BEu); RECOMP_ICALL_SAFE(0x00152D50u, _icall_esp);
-    }
+    PUSH32(esp, 0x000248BEu); s_fn_draw_indexed();
     _cf = g_eflags & 1u;
 
 loc_000248BE: ;
