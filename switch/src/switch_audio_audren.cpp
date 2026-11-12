@@ -259,12 +259,19 @@ void SwitchAudio_FlushPending(void) {
     if (!s_audio_initialized) return;
     PerfScope perf_scope(&s_perf_flush_ticks);
     ScopedAudioMutex lock;
+    bool committed = false;
     for (int i = 0; i < MAX_HW_VOICES; ++i) {
         if (s_hw_voices[i].active && s_hw_voices[i].staging_frames > 0) {
             commitVoiceStaging(i);
+            committed = true;
         }
     }
-    perfAudrvUpdate();
+    static uint64_t s_last_audrv_tick = 0;
+    uint64_t now = armGetSystemTick();
+    if (committed || (now - s_last_audrv_tick) >= (5ULL * 19200ULL)) {
+        s_last_audrv_tick = now;
+        perfAudrvUpdate();
+    }
 }
 
 uint32_t recomp_audio_output_speakers(void) {

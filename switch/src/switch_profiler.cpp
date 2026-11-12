@@ -107,15 +107,17 @@ RecompFunction __real_recomp_lookup_manual(uint32_t guest_address);
 // Bitmap de 256 KB sobre los primeros 2 MB de codigo guest.
 static uint8_t s_lk_neg[0x200000u / 8u];
 RecompFunction __wrap_recomp_lookup_manual(uint32_t guest_address) {
-    ++s_lk_calls;
     if (guest_address < 0x200000u && (s_lk_neg[guest_address >> 3] & (1u << (guest_address & 7u)))) {
-        ++s_lk_null;
         return NULL;
     }
+#ifdef SC2_FUNC_PROFILE
     uint32_t prev = sc2_prof_cur;
     sc2_prof_cur = 0x0017F000u;
     RecompFunction fn = __real_recomp_lookup_manual(guest_address);
     sc2_prof_cur = prev;
+#else
+    RecompFunction fn = __real_recomp_lookup_manual(guest_address);
+#endif
     if (fn == NULL && guest_address < 0x200000u &&
         guest_address != 0x0001CC50u && guest_address != 0x0001CCB0u)
         s_lk_neg[guest_address >> 3] |= (uint8_t)(1u << (guest_address & 7u));
@@ -154,12 +156,7 @@ extern uint32_t recomp_last_dispatch_address;
 RecompFunction __real_recomp_lookup(uint32_t xbox_va);
 RecompFunction __wrap_recomp_lookup(uint32_t xbox_va) {
     recomp_last_dispatch_address = xbox_va;
-    uint64_t t0 = armGetSystemTick();
-    RecompFunction fn = __real_recomp_lookup(xbox_va);
-    uint64_t dt = armGetSystemTick() - t0;
-    s_prof_core0.t_recomp_lookup += dt;
-    s_prof_core0.count_lookups++;
-    return fn;
+    return __real_recomp_lookup(xbox_va);
 }
 
 // ---- Wrap x87 math functions ----
@@ -586,6 +583,29 @@ static std::atomic<bool> s_pc_sampler_running{false};
 #define SC2_PC_SLOTS 0x20000u /* 32 MB .text @ 256B granularity */
 static uint32_t s_pc_hist[SC2_PC_SLOTS];
 
+struct PcCallerSlot {
+    uint32_t pc_off;
+    uint32_t lr_off;
+    uint32_t count;
+};
+static PcCallerSlot s_svc_callers[32];
+static PcCallerSlot s_mem_callers[32];
+
+static void record_caller(PcCallerSlot *table, uint32_t pc_off, uint32_t lr_off) {
+    for (int i = 0; i < 32; ++i) {
+        if (table[i].count == 0) {
+            table[i].pc_off = pc_off;
+            table[i].lr_off = lr_off;
+            table[i].count = 1;
+            return;
+        }
+        if (table[i].pc_off == pc_off && table[i].lr_off == lr_off) {
+            table[i].count++;
+            return;
+        }
+    }
+}
+
 void Switch_StartWatchdog(void);
 
 static void pc_sampler_worker(void *arg) {
@@ -621,6 +641,13 @@ static void pc_sampler_worker(void *arg) {
         if (slot >= SC2_PC_SLOTS) { out_of_range++; continue; }
         s_pc_hist[slot]++;
 
+        uint32_t lr_off = (ctx.lr >= text_base && ctx.lr - text_base < 0x2000000ULL) ? (uint32_t)(ctx.lr - text_base) : 0u;
+        if (rel >= 0x010E0EA0ULL && rel < 0x010E1400ULL) {
+            record_caller(s_svc_callers, (uint32_t)rel, lr_off);
+        } else if (rel >= 0x0115E000ULL && rel < 0x01168000ULL) {
+            record_caller(s_mem_callers, (uint32_t)rel, lr_off);
+        }
+
         uint64_t now = armGetSystemTick();
         if ((now - window_start) / 19200ULL >= 10000ULL) {
             FILE *f = Switch_GetMainLogFile();
@@ -638,9 +665,19 @@ static void pc_sampler_worker(void *arg) {
                             100.0 * best / (double)total, best);
                     s_pc_hist[best_i] = 0;
                 }
+                for (int i = 0; i < 32 && s_svc_callers[i].count > 0; ++i) {
+                    fprintf(f, "[PcProf-SVC] pc=+0x%08X lr=+0x%08X hits=%u\n",
+                            s_svc_callers[i].pc_off, s_svc_callers[i].lr_off, s_svc_callers[i].count);
+                }
+                for (int i = 0; i < 32 && s_mem_callers[i].count > 0; ++i) {
+                    fprintf(f, "[PcProf-MEM] pc=+0x%08X lr=+0x%08X hits=%u\n",
+                            s_mem_callers[i].pc_off, s_mem_callers[i].lr_off, s_mem_callers[i].count);
+                }
                 fflush(f);
             }
             memset(s_pc_hist, 0, sizeof(s_pc_hist));
+            memset(s_svc_callers, 0, sizeof(s_svc_callers));
+            memset(s_mem_callers, 0, sizeof(s_mem_callers));
             total = 0; out_of_range = 0;
             window_start = now;
         }

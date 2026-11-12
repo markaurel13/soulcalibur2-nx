@@ -51,7 +51,7 @@ void Switch_D3dWorkerShutdown(void);
 bool Switch_D3dWorkerIsActive(void);
 
 bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *cmd);
-bool Switch_D3dWorkerEnqueueGatherDraw(RecompD3dPresenter *presenter, const SwitchGatherDrawJob *job);
+bool Switch_D3dWorkerEnqueueGatherDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *cmd, const SwitchGatherDrawJob *job);
 uint8_t *Switch_D3dWorkerAllocPushBytes(uint32_t bytes, uint32_t *out_offset);
 bool Switch_D3dWorkerEnqueuePushShadow(RecompD3dPresenter *presenter, const SwitchPushShadowJob *job);
 bool Switch_D3dWorkerEnqueueReleaseMemory(RecompD3dPresenter *presenter, uint32_t base, uint32_t size, bool is_release);

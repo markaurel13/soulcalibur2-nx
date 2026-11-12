@@ -265,7 +265,6 @@ target_link_options(soulcalibur2
     -Wl,--wrap=recomp_d3d_wait_present
     -Wl,--wrap=recomp_lookup
     -Wl,--wrap=recomp_lookup_manual
-    -Wl,--wrap=recomp_dispatch_indirect_site
     -Wl,--wrap=sc2_x87_sin
     -Wl,--wrap=sc2_x87_cos
     -Wl,--wrap=sc2_x87_atan2

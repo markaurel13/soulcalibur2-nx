@@ -1643,7 +1643,11 @@ static bool bind_stage_texture(uint32_t device, uint32_t i, const uint32_t *stat
     const RecompD3dVertexLayout *layout, RecompD3dPresenterDrawCommand *draw)
 {
     RecompD3dPixelProgram *program = &draw->pixel_program;
-    RecompD3dPresenterDrawCommand texture = {0};
+    RecompD3dPresenterDrawCommand texture;
+    texture.has_texture = false;
+    texture.texture_is_backbuffer = false;
+    texture.fvf = draw->fvf;
+    memset(&texture.texture, 0, sizeof texture.texture);
     attach_texture(device, i, &texture);
     if (!texture.has_texture) return false;
     if (texture.texture_is_backbuffer || texture.texture.volume_depth != 0u)
@@ -2179,7 +2183,6 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     SwitchGatherDrawJob gather_job;
     if (offload_gather) {
         if (gather_first == UINT32_MAX) recomp_stop(2, "d3d8:gather-user-pointer");
-        memset(&gather_job, 0, sizeof gather_job);
         gather_job.num_parts = gather.count;
         uint32_t at = 0u;
         for (uint32_t p = 0u; p < gather.count; ++p) {
@@ -2421,11 +2424,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
 
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     if (offload_gather) {
-        gather_job.cmd = command;
         RecompD3dPresenter *presenter = recomp_d3d8_presenter();
-        if (!Switch_D3dWorkerEnqueueGatherDraw(presenter, &gather_job)) {
+        if (!Switch_D3dWorkerEnqueueGatherDraw(presenter, &command, &gather_job)) {
             Switch_D3dWorkerFlush();
-            if (!Switch_D3dWorkerEnqueueGatherDraw(presenter, &gather_job)) {
+            if (!Switch_D3dWorkerEnqueueGatherDraw(presenter, &command, &gather_job)) {
                 recomp_stop(2, "d3d8:worker-enqueue-gather");
             }
         }

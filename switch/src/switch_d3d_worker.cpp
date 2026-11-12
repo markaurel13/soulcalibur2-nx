@@ -525,7 +525,7 @@ bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3
     return true;
 }
 
-bool Switch_D3dWorkerEnqueueGatherDraw(RecompD3dPresenter *presenter, const SwitchGatherDrawJob *gjob)
+bool Switch_D3dWorkerEnqueueGatherDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *cmd, const SwitchGatherDrawJob *gjob)
 {
     if (!g_worker.active) return false;
     const uint64_t tq0 = worker_cntpct();
@@ -533,7 +533,7 @@ bool Switch_D3dWorkerEnqueueGatherDraw(RecompD3dPresenter *presenter, const Swit
     WorkerJob &job = g_worker.jobs[slot];
     job.type = JOB_GATHER_DRAW;
     job.presenter = presenter;
-    copyPresenterCommand(&job.data.gather.cmd, &gjob->cmd);
+    copyPresenterCommand(&job.data.gather.cmd, cmd);
     const size_t rest_off = offsetof(SwitchGatherDrawJob, num_parts);
     std::memcpy(reinterpret_cast<uint8_t *>(&job.data.gather) + rest_off,
                 reinterpret_cast<const uint8_t *>(gjob) + rest_off,
