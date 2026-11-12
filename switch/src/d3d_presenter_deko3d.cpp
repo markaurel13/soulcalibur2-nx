@@ -21,6 +21,7 @@ void Switch_TakeGuestPerf(uint64_t *d3d8_submit, uint64_t *dsound_pump,
                           uint64_t *dsound_hrtf, uint32_t *submits,
                           uint32_t *pumps, uint32_t *hrtfs,
                           uint64_t *draw_adapter, uint32_t *draw_calls,
+                          uint64_t *shadow_push, uint32_t *shadow_draws,
                           uint64_t *vblank_wait, uint32_t *vblank_waits,
                           uint64_t *present_wait, uint32_t *present_waits,
                           uint64_t *recomp_lookup_time, uint32_t *recomp_lookups,
@@ -2573,14 +2574,16 @@ RecompD3dPresenterError d3d_backend_submit(
                        g_perf.frames, au_nup, perfMs(au_up), au_nup ? perfMs(au_up) / au_nup : 0.0,
                        au_nsub, perfMs(au_sub), perfMs(au_flush));
 
-                uint64_t g_sub = 0, g_pump = 0, g_hrtf = 0, g_draw_adap = 0, g_vblank = 0, g_pres_wait = 0;
+                uint64_t g_sub = 0, g_pump = 0, g_hrtf = 0, g_draw_adap = 0, g_shadow_push = 0, g_vblank = 0, g_pres_wait = 0;
                 uint64_t g_lookup_t = 0, g_x87_t = 0;
-                uint32_t g_submits = 0, g_pumps = 0, g_hrtfs = 0, g_draw_calls = 0, g_vblanks = 0, g_pres_waits = 0;
+                uint32_t g_submits = 0, g_pumps = 0, g_hrtfs = 0, g_draw_calls = 0, g_shadow_draws = 0, g_vblanks = 0, g_pres_waits = 0;
                 uint32_t g_lookups = 0, g_sin_cnt = 0, g_cos_cnt = 0, g_atan2_cnt = 0;
                 size_t flat_bytes = 0;
                 char thread_times[256] = "";
                 Switch_TakeGuestPerf(&g_sub, &g_pump, &g_hrtf, &g_submits, &g_pumps, &g_hrtfs,
-                                     &g_draw_adap, &g_draw_calls, &g_vblank, &g_vblanks,
+                                     &g_draw_adap, &g_draw_calls,
+                                     &g_shadow_push, &g_shadow_draws,
+                                     &g_vblank, &g_vblanks,
                                      &g_pres_wait, &g_pres_waits,
                                      &g_lookup_t, &g_lookups,
                                      &g_x87_t, &g_sin_cnt, &g_cos_cnt, &g_atan2_cnt,
@@ -2590,15 +2593,16 @@ RecompD3dPresenterError d3d_backend_submit(
                 double dsound_pump_ms = perfMs(g_pump) / n;
                 double dsound_hrtf_ms = perfMs(g_hrtf) / n;
                 double d3d8_draw_ms = perfMs(g_draw_adap) / n;
+                double d3d8_shadow_ms = perfMs(g_shadow_push) / n;
                 double vblank_wait_ms = perfMs(g_vblank) / n;
                 double present_wait_ms = perfMs(g_pres_wait) / n;
                 double lookup_ms = perfMs(g_lookup_t) / n;
                 double x87_ms = perfMs(g_x87_t) / n;
-                double total_d3d8_guest_ms = d3d8_draw_ms + d3d8_sub_ms;
+                double total_d3d8_guest_ms = d3d8_draw_ms + d3d8_shadow_ms + d3d8_sub_ms;
                 double pure_logic_ms = guest - (dsound_pump_ms + total_d3d8_guest_ms + vblank_wait_ms + present_wait_ms);
                 if (pure_logic_ms < 0.0) pure_logic_ms = 0.0;
-                printf("[Perf] guest_cpu detailed breakdown: guest=%.2fms [pure_game=%.2fms d3d8_adapter=%.2fms (draws=%.0f, submit_copy=%.2fms) dsound=%.2fms (hrtf=%.2fms, calls=%u) vblank_wait=%.2fms (waits=%.1f) pres_wait=%.2fms]\n",
-                       guest, pure_logic_ms, d3d8_draw_ms, (double)g_draw_calls / n, d3d8_sub_ms, dsound_pump_ms, dsound_hrtf_ms, g_hrtfs, vblank_wait_ms, (double)g_vblanks / n, present_wait_ms);
+                printf("[Perf] guest_cpu detailed breakdown: guest=%.2fms [pure_game=%.2fms d3d8_total=%.2fms (regular_draws=%.0f:%.2fms, shadow_draws=%.0f:%.2fms, submit_copy=%.2fms) dsound=%.2fms (hrtf=%.2fms, calls=%u) vblank_wait=%.2fms (waits=%.1f) pres_wait=%.2fms]\n",
+                       guest, pure_logic_ms, total_d3d8_guest_ms, (double)g_draw_calls / n, d3d8_draw_ms, (double)g_shadow_draws / n, d3d8_shadow_ms, d3d8_sub_ms, dsound_pump_ms, dsound_hrtf_ms, g_hrtfs, vblank_wait_ms, (double)g_vblanks / n, present_wait_ms);
                 printf("[Perf] guest CPU internals: recomp_lookup=%.2fms (calls=%.0f, flat_table=%s, %zu KB) | x87_math=%.2fms (sin=%.0f, cos=%.0f, atan2=%.0f)\n",
                        lookup_ms, (double)g_lookups / n, flat_bytes ? "ACTIVE" : "OFF(binary search)", flat_bytes / 1024u,
                        x87_ms, (double)g_sin_cnt / n, (double)g_cos_cnt / n, (double)g_atan2_cnt / n);

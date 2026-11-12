@@ -56,8 +56,11 @@ foreach(_name IN LISTS _CHUNK_NAMES)
             if(EXISTS ${PROGRAM_DIR}/${_name})
                 file(READ ${PROGRAM_DIR}/${_name} _OLD)
             endif()
-            if(NOT "${_OLD}" STREQUAL "${_CONTENT}")
+            if(_OLD STREQUAL "")
                 file(WRITE ${PROGRAM_DIR}/${_name} "${_CONTENT}")
+                execute_process(
+                    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/opt_eflags.py ${PROGRAM_DIR}/${_name}
+                )
             endif()
         else()
             configure_file(${GENERATED_DIR}/${_name} ${PROGRAM_DIR}/${_name} COPYONLY)
@@ -110,7 +113,6 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_sub_24720.c
     src/switch_sub_2b670.c
     src/switch_sub_240c0.c
-    src/switch_math_neon.c
     src/switch_bone_neon.c
 )
 
@@ -138,7 +140,7 @@ set(RUNTIME_SOURCES
     ${RUNTIME_DIR}/d3d8_adapter.c
     ${RUNTIME_DIR}/d3d8_state_adapter.c
     ${RUNTIME_DIR}/d3d8_resource_adapter.c
-    ${RUNTIME_DIR}/d3d8_draw_adapter.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/switch_d3d8_draw_adapter.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/d3d_presenter_switch_thread.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/d3d_capture_packet.cpp
     ${RUNTIME_DIR}/d3d_vblank.cpp
@@ -249,10 +251,6 @@ target_link_options(soulcalibur2
     PRIVATE
     -Wl,--wrap=sub_0002B670
     -Wl,--wrap=sub_000240C0
-    -Wl,--wrap=sub_00011000
-    -Wl,--wrap=sub_00011250
-    -Wl,--wrap=sub_000126A0
-    -Wl,--wrap=sub_00145A64
     -Wl,--wrap=recomp_d3d8_submit
     -Wl,--wrap=recomp_dsound_buffers_pump
     -Wl,--wrap=recomp_hrtf_render

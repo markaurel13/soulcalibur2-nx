@@ -16,6 +16,7 @@ struct GuestPerfStats {
     uint64_t t_dsound_pump = 0;
     uint64_t t_dsound_hrtf = 0;
     uint64_t t_draw_adapter = 0;
+    uint64_t t_shadow_push = 0;
     uint64_t t_vblank_wait = 0;
     uint64_t t_present_wait = 0;
     uint64_t t_recomp_lookup = 0;
@@ -24,6 +25,7 @@ struct GuestPerfStats {
     uint32_t count_dsound_pumps = 0;
     uint32_t count_hrtf_renders = 0;
     uint32_t count_draw_calls = 0;
+    uint32_t count_shadow_draws = 0;
     uint32_t count_vblank_waits = 0;
     uint32_t count_present_waits = 0;
     uint32_t count_lookups = 0;
@@ -211,6 +213,7 @@ double __wrap_sc2_x87_atan2(double y, double x) {
 // ---- Intercept D3D8 draw entry points ----
 static RecompFunction s_real_draw_up = nullptr;
 static RecompFunction s_real_draw_indexed = nullptr;
+static RecompFunction s_real_end_push = nullptr;
 
 static void prof_draw_up(void) {
     uint64_t t0 = armGetSystemTick();
@@ -232,9 +235,23 @@ static void prof_draw_indexed(void) {
     mutexUnlock(&s_prof_mutex);
 }
 
+static void prof_end_push(void) {
+    uint64_t t0 = armGetSystemTick();
+    s_real_end_push();
+    uint64_t dt = armGetSystemTick() - t0;
+    mutexLock(&s_prof_mutex);
+    s_prof.t_shadow_push += dt;
+    s_prof.count_shadow_draws++;
+    mutexUnlock(&s_prof_mutex);
+}
+
 RecompFunction __real_recomp_d3d8_draw_lookup_manual(uint32_t address);
 RecompFunction __wrap_recomp_d3d8_draw_lookup_manual(uint32_t address) {
     RecompFunction fn = __real_recomp_d3d8_draw_lookup_manual(address);
+    if (address == 0x00152560u) { // end_push (shadow stencil volume draws)
+        s_real_end_push = fn;
+        return prof_end_push;
+    }
     if (address == 0x00152be0u) { // draw_up
         s_real_draw_up = fn;
         return prof_draw_up;
@@ -343,6 +360,7 @@ void Switch_TakeGuestPerf(uint64_t *d3d8_submit, uint64_t *dsound_pump,
                           uint64_t *dsound_hrtf, uint32_t *submits,
                           uint32_t *pumps, uint32_t *hrtfs,
                           uint64_t *draw_adapter, uint32_t *draw_calls,
+                          uint64_t *shadow_push, uint32_t *shadow_draws,
                           uint64_t *vblank_wait, uint32_t *vblank_waits,
                           uint64_t *present_wait, uint32_t *present_waits,
                           uint64_t *recomp_lookup_time, uint32_t *recomp_lookups,
@@ -360,6 +378,8 @@ void Switch_TakeGuestPerf(uint64_t *d3d8_submit, uint64_t *dsound_pump,
 
     if (draw_adapter) *draw_adapter = s_prof.t_draw_adapter;
     if (draw_calls) *draw_calls = s_prof.count_draw_calls;
+    if (shadow_push) *shadow_push = s_prof.t_shadow_push;
+    if (shadow_draws) *shadow_draws = s_prof.count_shadow_draws;
     if (vblank_wait) *vblank_wait = s_prof.t_vblank_wait;
     if (vblank_waits) *vblank_waits = s_prof.count_vblank_waits;
     if (present_wait) *present_wait = s_prof.t_present_wait;
