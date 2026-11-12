@@ -1,5 +1,6 @@
 #include "d3d_capture_packet.h"
 #include "d3d_presenter_backend.h"
+#include "switch_d3d_worker.h"
 
 #include <switch.h>
 
@@ -21,8 +22,10 @@ namespace {
 
 struct PresenterThread {
     std::thread::id owner_thread = std::this_thread::get_id();
+    std::thread::id d3d_worker_thread_id;
     std::thread worker;
     std::mutex mutex;
+    std::mutex submit_mutex;
     std::condition_variable changed;
     std::condition_variable wake_cv;
 
@@ -56,7 +59,8 @@ RecompD3dPresenterError validate(RecompD3dPresenter *presenter)
         presenter != reinterpret_cast<RecompD3dPresenter *>(active_thread)) {
         return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
     }
-    return std::this_thread::get_id() == active_thread->owner_thread
+    const auto tid = std::this_thread::get_id();
+    return (tid == active_thread->owner_thread || tid == active_thread->d3d_worker_thread_id)
         ? RECOMP_D3D_PRESENTER_OK : RECOMP_D3D_PRESENTER_WRONG_THREAD;
 }
 
@@ -264,10 +268,11 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     }
     active_thread = thread.release();
     *presenter = reinterpret_cast<RecompD3dPresenter *>(active_thread);
+    Switch_D3dWorkerInit();
     return RECOMP_D3D_PRESENTER_OK;
 }
 
-RecompD3dPresenterError recomp_d3d_presenter_submit(
+RecompD3dPresenterError Switch_PresenterSubmitDirect(
     RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
 {
     auto error = validate(presenter);
@@ -284,6 +289,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         } catch (const std::bad_alloc &) {
             return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
         }
+        std::lock_guard<std::mutex> submit_lock(thread.submit_mutex);
         error = thread.packets[thread.open].add(*command);
         if (error != RECOMP_D3D_PRESENTER_OK) {
             std::lock_guard<std::mutex> lock(thread.mutex);
@@ -292,41 +298,76 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         return error;
     }
 
-    error = thread.packets[thread.open].add(*command);
-    if (error != RECOMP_D3D_PRESENTER_OK) return error;
-
     if (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT) {
+        std::lock_guard<std::mutex> submit_lock(thread.submit_mutex);
+        error = thread.packets[thread.open].add(*command);
+        if (error != RECOMP_D3D_PRESENTER_OK) return error;
         return publish(thread, false);
     }
-    return RECOMP_D3D_PRESENTER_OK;
+
+    std::lock_guard<std::mutex> submit_lock(thread.submit_mutex);
+    error = thread.packets[thread.open].add(*command);
+    return error;
+}
+
+RecompD3dPresenterError Switch_PresenterReleaseMemoryDirect(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size, bool is_release)
+{
+    auto error = validate(presenter);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    auto &thread = *active_thread;
+    error = status(thread);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    std::lock_guard<std::mutex> submit_lock(thread.submit_mutex);
+    return is_release
+        ? thread.packets[thread.open].addRelease(base, size)
+        : thread.packets[thread.open].addInvalidate(base, size);
+}
+
+RecompD3dPresenterError recomp_d3d_presenter_submit(
+    RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    if (Switch_D3dWorkerIsActive() && command != nullptr) {
+        if (Switch_D3dWorkerEnqueueDirect(presenter, command)) {
+            if (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT) {
+                Switch_D3dWorkerFlush();
+            }
+            return RECOMP_D3D_PRESENTER_OK;
+        }
+        Switch_D3dWorkerFlush();
+    }
+    return Switch_PresenterSubmitDirect(presenter, command);
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_release_memory(
     RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
 {
-    auto error = validate(presenter);
-    if (error != RECOMP_D3D_PRESENTER_OK) return error;
-    auto &thread = *active_thread;
-    error = status(thread);
-    if (error != RECOMP_D3D_PRESENTER_OK) return error;
-    return thread.packets[thread.open].addRelease(base, size);
+    if (Switch_D3dWorkerIsActive()) {
+        if (Switch_D3dWorkerEnqueueReleaseMemory(presenter, base, size, true)) {
+            return RECOMP_D3D_PRESENTER_OK;
+        }
+        Switch_D3dWorkerFlush();
+    }
+    return Switch_PresenterReleaseMemoryDirect(presenter, base, size, true);
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_invalidate_textures(
     RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
 {
-    auto error = validate(presenter);
-    if (error != RECOMP_D3D_PRESENTER_OK) return error;
-    auto &thread = *active_thread;
-    error = status(thread);
-    if (error != RECOMP_D3D_PRESENTER_OK) return error;
-    return thread.packets[thread.open].addInvalidate(base, size);
+    if (Switch_D3dWorkerIsActive()) {
+        if (Switch_D3dWorkerEnqueueReleaseMemory(presenter, base, size, false)) {
+            return RECOMP_D3D_PRESENTER_OK;
+        }
+        Switch_D3dWorkerFlush();
+    }
+    return Switch_PresenterReleaseMemoryDirect(presenter, base, size, false);
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_flush(RecompD3dPresenter *presenter, bool wait)
 {
     auto error = validate(presenter);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    Switch_D3dWorkerFlush();
     auto &thread = *active_thread;
     error = status(thread);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
@@ -358,6 +399,7 @@ RecompD3dPresenterError recomp_d3d_presenter_visibility_result(
     const auto error = validate(presenter);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     if (complete == nullptr || pixels == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    Switch_D3dWorkerFlush();
     auto &thread = *active_thread;
     std::lock_guard<std::mutex> lock(thread.mutex);
     if (thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
@@ -393,6 +435,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presen
     if (presenter == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     const auto error = validate(*presenter);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    Switch_D3dWorkerShutdown();
     auto &thread = *active_thread;
     if (thread.packets[thread.open].count() != 0) publish(thread, true);
     {
@@ -437,5 +480,23 @@ extern "C" void Switch_GetPresenterThreadState(int *pending, int *front, int *op
         if (front) *front = -1;
         if (open) *open = -1;
         if (status) *status = -1;
+    }
+}
+
+extern "C" void *Switch_PresenterAllocPayload(size_t size) {
+    if (__builtin_expect(!active_thread, 0)) return nullptr;
+    std::lock_guard<std::mutex> lock(active_thread->submit_mutex);
+    return active_thread->packets[active_thread->open].allocPayload(size);
+}
+
+extern "C" bool Switch_PresenterContainsPayload(const void *ptr) {
+    if (__builtin_expect(!active_thread, 0)) return false;
+    std::lock_guard<std::mutex> lock(active_thread->submit_mutex);
+    return active_thread->packets[active_thread->open].containsPayload(ptr);
+}
+
+extern "C" void Switch_RegisterD3dWorkerThread(void) {
+    if (active_thread) {
+        active_thread->d3d_worker_thread_id = std::this_thread::get_id();
     }
 }

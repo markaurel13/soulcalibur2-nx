@@ -87,6 +87,13 @@ RecompD3dPresenterError D3dCapturePacket::add(
                 const size_t size = static_cast<size_t>(sizes[i]);
                 if (size == 0u) continue;
 
+                // Zero-copy: if source was already allocated directly into this packet's payload arena,
+                // record offset directly without reallocating or copying!
+                if (containsPayload(source)) {
+                    captured.offsets[i] = static_cast<const uint8_t *>(source) - payload_.data();
+                    continue;
+                }
+
                 const size_t offset = payload_.alloc(size);
                 std::memcpy(payload_.data() + offset, source, size);
                 captured.offsets[i] = offset;
@@ -130,6 +137,23 @@ RecompD3dPresenterError D3dCapturePacket::addInvalidate(uint32_t base, uint32_t 
 RecompD3dPresenterError D3dCapturePacket::addReport()
 {
     return addRecord(REPORT, 0u, 0u);
+}
+
+void *D3dCapturePacket::allocPayload(size_t bytes)
+{
+    if (sealed_) return nullptr;
+    try {
+        const size_t offset = payload_.alloc(bytes);
+        return payload_.data() + offset;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+bool D3dCapturePacket::containsPayload(const void *ptr) const
+{
+    const uint8_t *p = static_cast<const uint8_t *>(ptr);
+    return p >= payload_.data() && p < (payload_.data() + payload_.size());
 }
 
 void D3dCapturePacket::seal()

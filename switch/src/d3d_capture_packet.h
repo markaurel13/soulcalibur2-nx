@@ -25,6 +25,8 @@ public:
     RecompD3dPresenterError addRelease(uint32_t base, uint32_t size);
     RecompD3dPresenterError addInvalidate(uint32_t base, uint32_t size);
     RecompD3dPresenterError addReport();
+    void *allocPayload(size_t bytes);
+    bool containsPayload(const void *ptr) const;
     void seal();
     size_t count() const;
     const Record &record(size_t index) const;

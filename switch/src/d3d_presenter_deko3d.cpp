@@ -30,8 +30,11 @@ void Switch_TakeGuestPerf(uint64_t *d3d8_submit, uint64_t *dsound_pump,
                           size_t *flat_table_bytes,
                           char *thread_times_buf, size_t thread_times_size);
 bool Switch_IsGpuVtxEnabled(void);
+void Switch_TakeDrawProf(uint64_t *idx, uint64_t *gather_t, uint64_t *mat, uint64_t *shader, uint32_t *draws);
+void Switch_TakePushFailProf(uint32_t out[8]);
 bool Switch_IsFpsOverlayEnabled(void);
 }
+#include "switch_d3d_worker.h"
 
 // ---- Diagnostic perf accounting (19.2 MHz system tick; printed every 120 presented frames) ----
 enum GpuPassCategory : uint16_t {
@@ -2549,12 +2552,12 @@ RecompD3dPresenterError d3d_backend_submit(
                 double n = (double)g_perf.frames;
                 double wall_avg = perfMs(g_perf.wall_sum) / (n - 1.0);
                 double backend = perfMs(g_perf.t_backend) / n;
-                double guest = wall_avg - backend;
+                double guest = wall_avg;
                 uint64_t au_up, au_sub, au_flush; uint32_t au_nup, au_nsub;
                 SwitchAudio_TakePerf(&au_up, &au_sub, &au_flush, &au_nup, &au_nsub);
                 printf("[Perf] fps=%.1f wall_avg=%.2fms wall_max=%.2fms slow(>20ms)=%u/%u\n",
                        1000.0 / wall_avg, wall_avg, perfMs(g_perf.wall_max), g_perf.slow_frames, g_perf.frames);
-                printf("[Perf] per-frame ms: guest_cpu(wall-backend)=%.2f backend=%.2f [vtx_cpu=%.2f tex=%.2f audio_pump=%.2f "
+                printf("[Perf] per-frame ms: guest_cpu(wall)=%.2f backend=%.2f [vtx_cpu=%.2f tex=%.2f audio_pump=%.2f "
                        "gpu_fence_wait=%.2f vsync_acquire=%.2f draw_total=%.2f present=%.2f]\n",
                        guest, backend, perfMs(g_perf.t_vtx) / n, perfMs(g_perf.t_tex) / n,
                        perfMs(g_perf.t_audio_pump) / n, perfMs(g_perf.t_fence) / n,
@@ -2603,6 +2606,23 @@ RecompD3dPresenterError d3d_backend_submit(
                 if (pure_logic_ms < 0.0) pure_logic_ms = 0.0;
                 printf("[Perf] guest_cpu detailed breakdown: guest=%.2fms [pure_game=%.2fms d3d8_total=%.2fms (regular_draws=%.0f:%.2fms, shadow_draws=%.0f:%.2fms, submit_copy=%.2fms) dsound=%.2fms (hrtf=%.2fms, calls=%u) vblank_wait=%.2fms (waits=%.1f) pres_wait=%.2fms]\n",
                        guest, pure_logic_ms, total_d3d8_guest_ms, (double)g_draw_calls / n, d3d8_draw_ms, (double)g_shadow_draws / n, d3d8_shadow_ms, d3d8_sub_ms, dsound_pump_ms, dsound_hrtf_ms, g_hrtfs, vblank_wait_ms, (double)g_vblanks / n, present_wait_ms);
+                {
+                    uint64_t p_idx = 0, p_gath = 0, p_mat = 0, p_shd = 0;
+                    uint32_t p_drw = 0;
+                    Switch_TakeDrawProf(&p_idx, &p_gath, &p_mat, &p_shd, &p_drw);
+                    printf("[DrawProf] draws=%.1f/f | idx=%.2fms gather=%.2fms mat=%.2fms shader=%.2fms\n",
+                           (double)p_drw / n, perfMs(p_idx) / n, perfMs(p_gath) / n, perfMs(p_mat) / n, perfMs(p_shd) / n);
+                    uint32_t w_dir = 0, w_gath = 0, w_push = 0, w_wake = 0, w_spin = 0;
+                    uint64_t w_exec = 0, w_flush = 0, w_enq = 0;
+                    Switch_TakeWorkerProf(&w_dir, &w_gath, &w_push, &w_exec, &w_flush, &w_enq, &w_wake, &w_spin);
+                    uint32_t pf[8] = {};
+                    Switch_TakePushFailProf(pf);
+                    printf("[WorkerProf] jobs/f(dir=%.1f gath=%.1f push=%.1f) | core2_exec=%.2fms core0_flush=%.2fms core0_enq=%.2fms | wake=%.1f/f spin=%u | pfail=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
+                           (double)w_dir / n, (double)w_gath / n, (double)w_push / n,
+                           perfMs(w_exec) / n, perfMs(w_flush) / n, perfMs(w_enq) / n,
+                           (double)w_wake / n, w_spin,
+                           pf[0], pf[1], pf[2], pf[3], pf[4], pf[5], pf[6], pf[7]);
+                }
                 printf("[Perf] guest CPU internals: recomp_lookup=%.2fms (calls=%.0f, flat_table=%s, %zu KB) | x87_math=%.2fms (sin=%.0f, cos=%.0f, atan2=%.0f)\n",
                        lookup_ms, (double)g_lookups / n, flat_bytes ? "ACTIVE" : "OFF(binary search)", flat_bytes / 1024u,
                        x87_ms, (double)g_sin_cnt / n, (double)g_cos_cnt / n, (double)g_atan2_cnt / n);

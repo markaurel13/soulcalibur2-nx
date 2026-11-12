@@ -35,6 +35,7 @@ struct GuestPerfStats {
 };
 
 static GuestPerfStats s_prof;
+static GuestPerfStats s_prof_core0; // Core 0 local accumulation (Zero-Mutex contention)
 static Mutex s_prof_mutex;
 
 extern "C" {
@@ -47,10 +48,8 @@ void __wrap_recomp_d3d8_submit(const RecompD3dPresenterCommand *command) {
     uint64_t t0 = armGetSystemTick();
     __real_recomp_d3d8_submit(command);
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_d3d8_submit += dt;
-    s_prof.count_d3d8_submits++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_d3d8_submit += dt;
+    s_prof_core0.count_d3d8_submits++;
 }
 
 // ---- Wrap recomp_dsound_buffers_pump ----
@@ -59,10 +58,8 @@ void __wrap_recomp_dsound_buffers_pump(void) {
     uint64_t t0 = armGetSystemTick();
     __real_recomp_dsound_buffers_pump();
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_dsound_pump += dt;
-    s_prof.count_dsound_pumps++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_dsound_pump += dt;
+    s_prof_core0.count_dsound_pumps++;
 }
 
 // ---- Wrap recomp_hrtf_render ----
@@ -75,10 +72,8 @@ uint32_t __wrap_recomp_hrtf_render(RecompHrtfVoice *voice, const int16_t *input,
     uint64_t t0 = armGetSystemTick();
     uint32_t res = __real_recomp_hrtf_render(voice, input, input_frames, source_rate, out, out_frames);
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_dsound_hrtf += dt;
-    s_prof.count_hrtf_renders++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_dsound_hrtf += dt;
+    s_prof_core0.count_hrtf_renders++;
     return res;
 }
 
@@ -94,10 +89,8 @@ void __wrap_recomp_d3d_wait_vblank(void) {
     uint64_t dt = armGetSystemTick() - t0;
     // Solo contar el tiempo de espera si es el hilo de juego principal
     if (sc2_frame_thread == 0 || tid == sc2_frame_thread) {
-        mutexLock(&s_prof_mutex);
-        s_prof.t_vblank_wait += dt;
-        s_prof.count_vblank_waits++;
-        mutexUnlock(&s_prof_mutex);
+        s_prof_core0.t_vblank_wait += dt;
+        s_prof_core0.count_vblank_waits++;
     }
 }
 
@@ -152,10 +145,8 @@ void __wrap_recomp_d3d_wait_present(void) {
     __real_recomp_d3d_wait_present();
     sc2_phase0_report();
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_present_wait += dt;
-    s_prof.count_present_waits++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_present_wait += dt;
+    s_prof_core0.count_present_waits++;
 }
 
 // ---- Wrap recomp_lookup ----
@@ -166,10 +157,8 @@ RecompFunction __wrap_recomp_lookup(uint32_t xbox_va) {
     uint64_t t0 = armGetSystemTick();
     RecompFunction fn = __real_recomp_lookup(xbox_va);
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_recomp_lookup += dt;
-    s_prof.count_lookups++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_recomp_lookup += dt;
+    s_prof_core0.count_lookups++;
     return fn;
 }
 
@@ -179,10 +168,8 @@ double __wrap_sc2_x87_sin(double x) {
     uint64_t t0 = armGetSystemTick();
     double res = __real_sc2_x87_sin(x);
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_x87_math += dt;
-    s_prof.count_x87_sin++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_x87_math += dt;
+    s_prof_core0.count_x87_sin++;
     return res;
 }
 
@@ -191,10 +178,8 @@ double __wrap_sc2_x87_cos(double x) {
     uint64_t t0 = armGetSystemTick();
     double res = __real_sc2_x87_cos(x);
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_x87_math += dt;
-    s_prof.count_x87_cos++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_x87_math += dt;
+    s_prof_core0.count_x87_cos++;
     return res;
 }
 
@@ -203,10 +188,8 @@ double __wrap_sc2_x87_atan2(double y, double x) {
     uint64_t t0 = armGetSystemTick();
     double res = __real_sc2_x87_atan2(y, x);
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_x87_math += dt;
-    s_prof.count_x87_atan2++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_x87_math += dt;
+    s_prof_core0.count_x87_atan2++;
     return res;
 }
 
@@ -219,30 +202,24 @@ static void prof_draw_up(void) {
     uint64_t t0 = armGetSystemTick();
     s_real_draw_up();
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_draw_adapter += dt;
-    s_prof.count_draw_calls++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_draw_adapter += dt;
+    s_prof_core0.count_draw_calls++;
 }
 
 static void prof_draw_indexed(void) {
     uint64_t t0 = armGetSystemTick();
     s_real_draw_indexed();
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_draw_adapter += dt;
-    s_prof.count_draw_calls++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_draw_adapter += dt;
+    s_prof_core0.count_draw_calls++;
 }
 
 static void prof_end_push(void) {
     uint64_t t0 = armGetSystemTick();
     s_real_end_push();
     uint64_t dt = armGetSystemTick() - t0;
-    mutexLock(&s_prof_mutex);
-    s_prof.t_shadow_push += dt;
-    s_prof.count_shadow_draws++;
-    mutexUnlock(&s_prof_mutex);
+    s_prof_core0.t_shadow_push += dt;
+    s_prof_core0.count_shadow_draws++;
 }
 
 RecompFunction __real_recomp_d3d8_draw_lookup_manual(uint32_t address);
@@ -369,6 +346,29 @@ void Switch_TakeGuestPerf(uint64_t *d3d8_submit, uint64_t *dsound_pump,
                           size_t *flat_table_bytes,
                           char *thread_times_buf, size_t thread_times_size) {
     mutexLock(&s_prof_mutex);
+    // Flush Core 0 local accumulation
+    s_prof.t_d3d8_submit += s_prof_core0.t_d3d8_submit;
+    s_prof.t_dsound_pump += s_prof_core0.t_dsound_pump;
+    s_prof.t_dsound_hrtf += s_prof_core0.t_dsound_hrtf;
+    s_prof.t_draw_adapter += s_prof_core0.t_draw_adapter;
+    s_prof.t_shadow_push += s_prof_core0.t_shadow_push;
+    s_prof.t_vblank_wait += s_prof_core0.t_vblank_wait;
+    s_prof.t_present_wait += s_prof_core0.t_present_wait;
+    s_prof.t_recomp_lookup += s_prof_core0.t_recomp_lookup;
+    s_prof.t_x87_math += s_prof_core0.t_x87_math;
+    s_prof.count_d3d8_submits += s_prof_core0.count_d3d8_submits;
+    s_prof.count_dsound_pumps += s_prof_core0.count_dsound_pumps;
+    s_prof.count_hrtf_renders += s_prof_core0.count_hrtf_renders;
+    s_prof.count_draw_calls += s_prof_core0.count_draw_calls;
+    s_prof.count_shadow_draws += s_prof_core0.count_shadow_draws;
+    s_prof.count_vblank_waits += s_prof_core0.count_vblank_waits;
+    s_prof.count_present_waits += s_prof_core0.count_present_waits;
+    s_prof.count_lookups += s_prof_core0.count_lookups;
+    s_prof.count_x87_sin += s_prof_core0.count_x87_sin;
+    s_prof.count_x87_cos += s_prof_core0.count_x87_cos;
+    s_prof.count_x87_atan2 += s_prof_core0.count_x87_atan2;
+    s_prof_core0 = GuestPerfStats{};
+
     if (d3d8_submit) *d3d8_submit = s_prof.t_d3d8_submit;
     if (dsound_pump) *dsound_pump = s_prof.t_dsound_pump;
     if (dsound_hrtf) *dsound_hrtf = s_prof.t_dsound_hrtf;
@@ -580,6 +580,73 @@ static void sampler_worker(void *arg) {
     }
 }
 
+static Thread s_pc_sampler_thread;
+alignas(0x1000) static char s_pc_sampler_stack[0x10000];
+static std::atomic<bool> s_pc_sampler_running{false};
+#define SC2_PC_SLOTS 0x20000u /* 32 MB .text @ 256B granularity */
+static uint32_t s_pc_hist[SC2_PC_SLOTS];
+
+void Switch_StartWatchdog(void);
+
+static void pc_sampler_worker(void *arg) {
+    (void)arg;
+    Handle main_h = envGetMainThreadHandle();
+    if (main_h == INVALID_HANDLE) return;
+
+    MemoryInfo mem_info{};
+    u32 page_info = 0;
+    if (R_FAILED(svcQueryMemory(&mem_info, &page_info, (u64)&Switch_StartWatchdog))) return;
+    const uint64_t text_base = mem_info.addr;
+
+    uint64_t window_start = armGetSystemTick();
+    uint32_t total = 0, out_of_range = 0;
+    while (s_pc_sampler_running.load(std::memory_order_relaxed)) {
+        svcSleepThread(1500000ULL); // ~1.5ms (~667 Hz)
+        Result rc = svcSetThreadActivity(main_h, ThreadActivity_Paused);
+        if (R_FAILED(rc)) {
+            FILE *f = Switch_GetMainLogFile();
+            if (f) { fprintf(f, "[PcProf] svcSetThreadActivity failed: 0x%x\n", rc); fflush(f); }
+            break;
+        }
+        ThreadContext ctx{};
+        rc = svcGetThreadContext3(&ctx, main_h);
+        svcSetThreadActivity(main_h, ThreadActivity_Runnable);
+        if (R_FAILED(rc)) continue;
+
+        total++;
+        uint64_t pc = ctx.pc.x;
+        if (pc < text_base) { out_of_range++; continue; }
+        uint64_t rel = pc - text_base;
+        uint64_t slot = rel >> 8;
+        if (slot >= SC2_PC_SLOTS) { out_of_range++; continue; }
+        s_pc_hist[slot]++;
+
+        uint64_t now = armGetSystemTick();
+        if ((now - window_start) / 19200ULL >= 10000ULL) {
+            FILE *f = Switch_GetMainLogFile();
+            if (f) {
+                fprintf(f, "[PcProf] window=10s samples=%u other=%u text_base=0x%llx ref_off=0x%llx\n",
+                        total, out_of_range, (unsigned long long)text_base,
+                        (unsigned long long)((uint64_t)&Switch_StartWatchdog - text_base));
+                for (int rank = 0; rank < 20; ++rank) {
+                    uint32_t best = 0, best_i = 0;
+                    for (uint32_t i = 0; i < SC2_PC_SLOTS; ++i) {
+                        if (s_pc_hist[i] > best) { best = s_pc_hist[i]; best_i = i; }
+                    }
+                    if (best == 0) break;
+                    fprintf(f, "[PcProf] #%d +0x%08X %.2f%% (%u)\n", rank, best_i << 8,
+                            100.0 * best / (double)total, best);
+                    s_pc_hist[best_i] = 0;
+                }
+                fflush(f);
+            }
+            memset(s_pc_hist, 0, sizeof(s_pc_hist));
+            total = 0; out_of_range = 0;
+            window_start = now;
+        }
+    }
+}
+
 void Switch_StartWatchdog(void) {
     s_last_activity_tick.store(armGetSystemTick(), std::memory_order_relaxed);
     s_watchdog_running.store(true, std::memory_order_relaxed);
@@ -592,6 +659,11 @@ void Switch_StartWatchdog(void) {
         if (R_SUCCEEDED(threadCreate(&s_sampler_thread, sampler_worker, NULL, s_sampler_stack, sizeof(s_sampler_stack), 0x2C, 2))) {
             threadStart(&s_sampler_thread);
         }
+#else
+        s_pc_sampler_running.store(true, std::memory_order_relaxed);
+        if (R_SUCCEEDED(threadCreate(&s_pc_sampler_thread, pc_sampler_worker, NULL, s_pc_sampler_stack, sizeof(s_pc_sampler_stack), 0x28, 1))) {
+            threadStart(&s_pc_sampler_thread);
+        }
 #endif
     } else {
         printf("[Main] [!] Failed to create watchdog thread: 0x%x\n", rc);
@@ -599,6 +671,10 @@ void Switch_StartWatchdog(void) {
 }
 
 void Switch_StopWatchdog(void) {
+    if (s_pc_sampler_running.exchange(false)) {
+        threadWaitForExit(&s_pc_sampler_thread);
+        threadClose(&s_pc_sampler_thread);
+    }
     if (s_sampler_running.exchange(false)) {
         threadWaitForExit(&s_sampler_thread);
         threadClose(&s_sampler_thread);

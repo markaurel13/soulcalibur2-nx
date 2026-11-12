@@ -18,7 +18,7 @@ set(PROGRAM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../private/program/runtime-sources)
 
 file(MAKE_DIRECTORY ${PROGRAM_DIR})
 
-option(SC2_FUNC_PROFILE "Muestreo de funciones guest (telemetria)" ON)
+option(SC2_FUNC_PROFILE "Muestreo de funciones guest (telemetria)" OFF)
 if(SC2_FUNC_PROFILE)
     add_compile_definitions(SC2_FUNC_PROFILE=1)
 endif()
@@ -47,6 +47,10 @@ foreach(_name IN LISTS _CHUNK_NAMES)
                 string(REPLACE "void sub_00023A60(void)\n{" "void __real_sub_00023A60(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00023AF0(void)\n{" "void __real_sub_00023AF0(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00023B90(void)\n{" "void __real_sub_00023B90(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00011000(void)\n{" "void __real_sub_00011000(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00011250(void)\n{" "void __real_sub_00011250(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00011390(void)\n{" "void __real_sub_00011390(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_000123C0(void)\n{" "void __real_sub_000123C0(void)\n{" _CONTENT "${_CONTENT}")
             endif()
             if(SC2_FUNC_PROFILE)
                 string(REGEX REPLACE "void (sub_([0-9A-F]+))\\(void\\)\n\\{\n" "void \\1(void)\n{\n    SC2_PROF_SCOPE(0x\\2u);\n" _CONTENT "${_CONTENT}")
@@ -114,6 +118,7 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_sub_2b670.c
     src/switch_sub_240c0.c
     src/switch_bone_neon.c
+    src/switch_math_neon.c
 )
 
 set(PROGRAM_SOURCES
@@ -142,6 +147,7 @@ set(RUNTIME_SOURCES
     ${RUNTIME_DIR}/d3d8_resource_adapter.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/switch_d3d8_draw_adapter.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/d3d_presenter_switch_thread.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/switch_d3d_worker.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/d3d_capture_packet.cpp
     ${RUNTIME_DIR}/d3d_vblank.cpp
     ${RUNTIME_DIR}/d3d_draw_model.c
