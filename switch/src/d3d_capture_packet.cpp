@@ -9,10 +9,8 @@
 namespace {
 
 using Draw = RecompD3dPresenterDrawCommand;
-constexpr const void *Draw::*pointer_fields[] = {
-    &Draw::vertex_bytes, &Draw::index_bytes, &Draw::texture_bytes,
-    &Draw::palette_bytes, &Draw::alpha_mask_bytes,
-    &Draw::alpha_mask_palette, &Draw::reflection_bytes, &Draw::reflection_stage2_bytes,
+constexpr const void *Draw::*pointer_fields[2] = {
+    &Draw::vertex_bytes, &Draw::index_bytes,
 };
 constexpr uint64_t max_span_bytes = 64u * 1024u * 1024u;
 constexpr size_t null_offset = SIZE_MAX;
@@ -49,9 +47,8 @@ void copyCommand(RecompD3dPresenterCommand &to, const RecompD3dPresenterCommand 
 D3dCapturePacket::D3dCapturePacket()
 {
     // Pre-reserve buffers to eliminate reallocations during frame submission
-    entries_.reserve(1024);
-    commands_.reserve(1024);
-    payload_.reserve(1024 * 1024); // 8 MB preallocated
+    entries_.reserve(2048);
+    commands_.reserve(2048);
 }
 
 RecompD3dPresenterError D3dCapturePacket::add(
@@ -62,22 +59,14 @@ RecompD3dPresenterError D3dCapturePacket::add(
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
 
-    uint64_t sizes[8]{};
+    uint64_t sizes[2]{};
     if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW ||
         command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE) {
         const auto &draw = command.data.draw;
         sizes[0] = uint64_t(draw.vertex_count) * draw.vertex_stride;
         sizes[1] = uint64_t(draw.index_count) * 2u;
-        if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
-            sizes[2] = draw.texture_byte_count;
-            sizes[3] = draw.palette_byte_count;
-            sizes[4] = draw.alpha_mask_byte_count;
-            sizes[5] = draw.alpha_mask_palette_byte_count;
-            sizes[6] = draw.reflection_byte_count;
-            sizes[7] = draw.reflection_stage2_byte_count;
-        }
-        for (uint64_t size : sizes) {
-            if (size > max_span_bytes) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+        if (sizes[0] > max_span_bytes || sizes[1] > max_span_bytes) {
+            return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
         }
     }
 
@@ -89,21 +78,16 @@ RecompD3dPresenterError D3dCapturePacket::add(
         copyCommand(captured.value, command);
         if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW ||
             command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE) {
-            for (size_t i = 0u; i < 8u; ++i) {
+            for (size_t i = 0u; i < 2u; ++i) {
                 const void *source = command.data.draw.*pointer_fields[i];
                 captured.value.data.draw.*pointer_fields[i] = nullptr;
                 captured.offsets[i] = null_offset;
-                if (source == nullptr || (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE && i >= 2u)) continue;
+                if (source == nullptr) continue;
 
                 const size_t size = static_cast<size_t>(sizes[i]);
                 if (size == 0u) continue;
 
-                // High-performance direct linear copy: eliminate hash table lookups and memcmp
-                const size_t offset = payload_.size();
-                const size_t words = (size + 7u) / 8u;
-                if (words > payload_.max_size() - offset) throw std::length_error("capture payload");
-                payload_.resize(offset + words);
-                payload_[offset + words - 1u] = 0u;
+                const size_t offset = payload_.alloc(size);
                 std::memcpy(payload_.data() + offset, source, size);
                 captured.offsets[i] = offset;
             }
@@ -116,7 +100,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     entries_.resize(old_entry_count);
     commands_.resize(old_command_count);
-    payload_.resize(old_payload_size);
+    payload_.truncate(old_payload_size);
     return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
 }
 
@@ -151,12 +135,13 @@ RecompD3dPresenterError D3dCapturePacket::addReport()
 void D3dCapturePacket::seal()
 {
     if (sealed_) return;
+    const uint8_t *base = payload_.data();
     for (auto &captured : commands_) {
         if (captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW &&
             captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE) continue;
-        for (size_t i = 0u; i < 8u; ++i) {
-            captured.value.data.draw.*pointer_fields[i] = captured.offsets[i] == null_offset
-                ? nullptr : payload_.data() + captured.offsets[i];
+        for (size_t i = 0u; i < 2u; ++i) {
+            captured.value.data.draw.*pointer_fields[i] = (captured.offsets[i] == null_offset)
+                ? nullptr : (base + captured.offsets[i]);
         }
     }
     sealed_ = true;
@@ -188,6 +173,6 @@ void D3dCapturePacket::clear()
 
 uint64_t D3dCapturePacket::bytes() const
 {
-    return uint64_t(commands_.size()) * sizeof(RecompD3dPresenterCommand) +
-        uint64_t(entries_.size()) * sizeof(Record) + uint64_t(payload_.size()) * sizeof(uint64_t);
+    return uint64_t(commands_.size()) * sizeof(CapturedCommand) +
+        uint64_t(entries_.size()) * sizeof(Entry) + uint64_t(payload_.size());
 }

@@ -10,3 +10,6 @@
 - **Cero Overclock**: Todo el rendimiento debe medirse y optimizarse a las frecuencias estándar de fábrica en modo Handheld (CPU 1020 MHz, GPU 307 MHz).
 - **Integridad de Código**: Las modificaciones se limitan exclusivamente a las capas de plataforma en `switch/` y `tools/`. Nunca modificar `runtime/` o `third_party/`.
 - **Telemetría no invasiva**: Los contadores de GPU deben usar hardware queries nativas de Deko3D (`dkCmdBufReportCounter`) sin bloquear el pipeline ni degradar el framerate.
+
+## 3. Monitoreo Activo de Compilaciones
+- **Monitoreo Periódico Cada 5 Minutos**: En cualquier compilación en segundo plano que no finalice inmediatamente, se debe verificar activamente el progreso de los procesos de compilación (`cc1`, `ninja`) cada 5 minutos mediante temporizadores (`schedule`), informando el estado y consumo de recursos para garantizar transparencia y evitar la sensación de congelamiento.
