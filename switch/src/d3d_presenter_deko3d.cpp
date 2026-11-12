@@ -2232,8 +2232,10 @@ RecompD3dPresenterError d3d_backend_submit(
         }
 
         static auto isSc2FastCombiner = [](const RecompD3dCombiners &c) -> bool {
-            if (c.color_input[0] != 0xc4c8c5c8u || c.color_output[0] != 0x00010c00u ||
-                c.alpha_input[0] != 0xd4d81010u || c.alpha_output[0] != 0x000000c0u) {
+            bool valid_c0 = (c.color_input[0] == 0xc4c8c5c8u) || (c.color_input[0] == 0xc420c520u);
+            bool valid_a0 = (c.alpha_input[0] == 0xd4d81010u) || (c.alpha_input[0] == 0xd4d11010u);
+            if (!valid_c0 || c.color_output[0] != 0x00010c00u ||
+                !valid_a0 || c.alpha_output[0] != 0x000000c0u) {
                 return false;
             }
             if (c.final0 != 0x130c0300u || c.final1 != 0x00001c80u) {
