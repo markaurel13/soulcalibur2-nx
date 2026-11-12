@@ -108,6 +108,7 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_profiler.cpp
     src/switch_sub_23c30.c
     src/switch_sub_24720.c
+    src/switch_sub_2b670.c
     src/switch_bone_neon.c
 )
 
@@ -244,6 +245,7 @@ target_link_libraries(soulcalibur2
 
 target_link_options(soulcalibur2
     PRIVATE
+    -Wl,--wrap=sub_0002B670
     -Wl,--wrap=recomp_d3d8_submit
     -Wl,--wrap=recomp_dsound_buffers_pump
     -Wl,--wrap=recomp_hrtf_render
