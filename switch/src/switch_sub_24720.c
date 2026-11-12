@@ -45,39 +45,44 @@ void sub_00024720(void)
     uint32_t sphere_ptr = MEM32(node_ptr + 0x24);
 
     // Fast native frustum culling check
-    if (sphere_ptr != 0 && MEM8(node_ptr) == 0) {
+    uint32_t mat_base = MEM32(node_ptr + 8);
+    if (sphere_ptr != 0 && MEM8(node_ptr) == 0 && mat_base != 0) {
         float cx = MEMF(sphere_ptr + 0);
         float cy = MEMF(sphere_ptr + 4);
         float cz = MEMF(sphere_ptr + 8);
         float cr = MEMF(sphere_ptr + 12);
 
-        // Transformation matrix at [node_ptr + 8] + 0xD0
-        uint32_t mat_addr = MEM32(node_ptr + 8) + 0xD0;
+        // If radius is zero or negative (e.g. attachment points, anchors), never cull
+        if (cr > 0.0001f) {
+            // Transformation matrix at [node_ptr + 8] + 0xD0
+            uint32_t mat_addr = mat_base + 0xD0;
 
-        // Transform bounding sphere center by matrix (row-major vector-matrix product)
-        float tx = cx * MEMF(mat_addr + 0)  + cy * MEMF(mat_addr + 16) + cz * MEMF(mat_addr + 32) + MEMF(mat_addr + 48);
-        float ty = cx * MEMF(mat_addr + 4)  + cy * MEMF(mat_addr + 20) + cz * MEMF(mat_addr + 36) + MEMF(mat_addr + 52);
-        float tz = cx * MEMF(mat_addr + 8)  + cy * MEMF(mat_addr + 24) + cz * MEMF(mat_addr + 40) + MEMF(mat_addr + 56);
+            // Transform bounding sphere center by matrix (row-major vector-matrix product)
+            float tx = cx * MEMF(mat_addr + 0)  + cy * MEMF(mat_addr + 16) + cz * MEMF(mat_addr + 32) + MEMF(mat_addr + 48);
+            float ty = cx * MEMF(mat_addr + 4)  + cy * MEMF(mat_addr + 20) + cz * MEMF(mat_addr + 36) + MEMF(mat_addr + 52);
+            float tz = cx * MEMF(mat_addr + 8)  + cy * MEMF(mat_addr + 24) + cz * MEMF(mat_addr + 40) + MEMF(mat_addr + 56);
 
-        // 1. Near-plane culling test: if tz < -cr, object is behind camera
-        if (tz < -cr) {
-            s_cull_culled_count++;
-            g_esp += 4; // pop return address (cdecl/ret)
-            return;
+            // 1. Near-plane culling test: if tz < -cr, object is behind camera
+            if (tz < -cr) {
+                s_cull_culled_count++;
+                g_esp += 4; // pop return address (cdecl/ret)
+                return;
+            }
+
+            // 2. 4-plane frustum test (planes stored at 0x38C470 to 0x38C4B0)
+            // Note: Soulcalibur II plane normals point OUTWARD, so an object is outside if dot > cr!
+            float p0_x = MEMF(0x38C470), p0_y = MEMF(0x38C474), p0_z = MEMF(0x38C478);
+            if (tx * p0_x + ty * p0_y + tz * p0_z > cr) { s_cull_culled_count++; g_esp += 4; return; }
+
+            float p1_x = MEMF(0x38C480), p1_y = MEMF(0x38C484), p1_z = MEMF(0x38C488);
+            if (tx * p1_x + ty * p1_y + tz * p1_z > cr) { s_cull_culled_count++; g_esp += 4; return; }
+
+            float p2_x = MEMF(0x38C490), p2_y = MEMF(0x38C494), p2_z = MEMF(0x38C498);
+            if (tx * p2_x + ty * p2_y + tz * p2_z > cr) { s_cull_culled_count++; g_esp += 4; return; }
+
+            float p3_x = MEMF(0x38C4A0), p3_y = MEMF(0x38C4A4), p3_z = MEMF(0x38C4A8);
+            if (tx * p3_x + ty * p3_y + tz * p3_z > cr) { s_cull_culled_count++; g_esp += 4; return; }
         }
-
-        // 2. 4-plane frustum test (planes stored at 0x38C470 to 0x38C4B0)
-        float p0_x = MEMF(0x38C470), p0_y = MEMF(0x38C474), p0_z = MEMF(0x38C478);
-        if (tx * p0_x + ty * p0_y + tz * p0_z < -cr) { s_cull_culled_count++; g_esp += 4; return; }
-
-        float p1_x = MEMF(0x38C480), p1_y = MEMF(0x38C484), p1_z = MEMF(0x38C488);
-        if (tx * p1_x + ty * p1_y + tz * p1_z < -cr) { s_cull_culled_count++; g_esp += 4; return; }
-
-        float p2_x = MEMF(0x38C490), p2_y = MEMF(0x38C494), p2_z = MEMF(0x38C498);
-        if (tx * p2_x + ty * p2_y + tz * p2_z < -cr) { s_cull_culled_count++; g_esp += 4; return; }
-
-        float p3_x = MEMF(0x38C4A0), p3_y = MEMF(0x38C4A4), p3_z = MEMF(0x38C4A8);
-        if (tx * p3_x + ty * p3_y + tz * p3_z < -cr) { s_cull_culled_count++; g_esp += 4; return; }
     }
 
     s_cull_rendered_count++;
