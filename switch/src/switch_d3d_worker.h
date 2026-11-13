@@ -56,6 +56,7 @@ uint8_t *Switch_D3dWorkerAllocPushBytes(uint32_t bytes, uint32_t *out_offset);
 bool Switch_D3dWorkerEnqueuePushShadow(RecompD3dPresenter *presenter, const SwitchPushShadowJob *job);
 bool Switch_D3dWorkerEnqueueReleaseMemory(RecompD3dPresenter *presenter, uint32_t base, uint32_t size, bool is_release);
 void Switch_D3dWorkerFlush(void);
+void Switch_D3dWorkerEndFrame(void);
 void Switch_TakeWorkerProf(uint32_t *direct_cnt, uint32_t *gather_cnt, uint32_t *push_cnt,
     uint64_t *exec_ticks, uint64_t *flush_ticks, uint64_t *enqueue_ticks,
     uint32_t *wakeups, uint32_t *full_spins);

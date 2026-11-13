@@ -13,6 +13,7 @@
 
 #define RECOMP_GENERATED_CODE
 #include "recomp_funcs.h"
+#include "sc2_fast_mem.h"
 #include <arm_neon.h>
 #include "sc2_prof.h"
 
@@ -22,9 +23,9 @@
 static inline void neon_mat_transform_impl(void)
 {
     uint32_t dest_va = MEM32(g_esp + 4);
-    const float *mat = (const float *)recomp_memory_u32(eax);
-    const float *v_in = (const float *)recomp_memory_u32(ecx);
-    float *dest = (float *)recomp_memory_u32(dest_va);
+    const float *mat = (const float *)sc2_mem_u32_ptr(eax);
+    const float *v_in = (const float *)sc2_mem_u32_ptr(ecx);
+    float *dest = (float *)sc2_mem_u32_ptr(dest_va);
 
     float32x4_t r0 = vld1q_f32(mat + 0);
     float32x4_t r1 = vld1q_f32(mat + 4);
@@ -53,10 +54,10 @@ static inline void neon_mat_transform_impl(void)
 static inline void neon_mat_transform_acc_impl(void)
 {
     uint32_t acc_va = MEM32(g_esp + 4);
-    const float *mat = (const float *)recomp_memory_u32(eax);
-    const float *v_in = (const float *)recomp_memory_u32(ecx);
-    const float *acc = (const float *)recomp_memory_u32(acc_va);
-    float *dest = (float *)recomp_memory_u32(esi);
+    const float *mat = (const float *)sc2_mem_u32_ptr(eax);
+    const float *v_in = (const float *)sc2_mem_u32_ptr(ecx);
+    const float *acc = (const float *)sc2_mem_u32_ptr(acc_va);
+    float *dest = (float *)sc2_mem_u32_ptr(esi);
 
     float32x4_t r0 = vld1q_f32(mat + 0);
     float32x4_t r1 = vld1q_f32(mat + 4);

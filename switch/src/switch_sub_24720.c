@@ -13,6 +13,7 @@
 
 #define RECOMP_GENERATED_CODE
 #include "recomp_funcs.h"
+#include "sc2_fast_mem.h"
 #include <math.h>
 #include <stdio.h>
 #include "sc2_prof.h"
@@ -42,9 +43,10 @@ static inline void init_d3d_cached_fns(void)
 void sub_00024720(void)
 {
     SC2_PROF_SCOPE(0x00024720u);
-    s_cull_total_calls++;
     init_d3d_cached_fns();
 
+#ifdef SC2_CULL_PROFILE
+    s_cull_total_calls++;
     if ((s_cull_total_calls % 1000) == 0) {
         FILE* f = Switch_GetMainLogFile();
         if (f) {
@@ -56,6 +58,7 @@ void sub_00024720(void)
             fflush(f);
         }
     }
+#endif
 
     // Parameter [esp + 4]: node pointer
     uint32_t node_ptr = MEM32(g_esp + 4);

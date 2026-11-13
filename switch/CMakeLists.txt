@@ -51,11 +51,19 @@ foreach(_name IN LISTS _CHUNK_NAMES)
                 string(REPLACE "void sub_00011250(void)\n{" "void __real_sub_00011250(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00011390(void)\n{" "void __real_sub_00011390(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_000123C0(void)\n{" "void __real_sub_000123C0(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00012600(void)\n{" "void __real_sub_00012600(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00012640(void)\n{" "void __real_sub_00012640(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_000126A0(void)\n{" "void __real_sub_000126A0(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00012720(void)\n{" "void __real_sub_00012720(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00012550(void)\n{" "void __real_sub_00012550(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00012790(void)\n{" "void __real_sub_00012790(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00011710(void)\n{" "void __real_sub_00011710(void)\n{" _CONTENT "${_CONTENT}")
             endif()
             if(SC2_FUNC_PROFILE)
                 string(REGEX REPLACE "void (sub_([0-9A-F]+))\\(void\\)\n\\{\n" "void \\1(void)\n{\n    SC2_PROF_SCOPE(0x\\2u);\n" _CONTENT "${_CONTENT}")
                 set(_CONTENT "#include \"sc2_prof.h\"\n${_CONTENT}")
             endif()
+            string(REPLACE "#include \"recomp_funcs.h\"" "#include \"recomp_funcs.h\"\n#include \"sc2_fast_mem.h\"" _CONTENT "${_CONTENT}")
             set(_OLD "")
             if(EXISTS ${PROGRAM_DIR}/${_name})
                 file(READ ${PROGRAM_DIR}/${_name} _OLD)
@@ -64,6 +72,9 @@ foreach(_name IN LISTS _CHUNK_NAMES)
                 file(WRITE ${PROGRAM_DIR}/${_name} "${_CONTENT}")
                 execute_process(
                     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/opt_eflags.py ${PROGRAM_DIR}/${_name}
+                )
+                execute_process(
+                    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/opt_direct_calls.py ${PROGRAM_DIR}/${_name}
                 )
             endif()
         else()
@@ -77,7 +88,8 @@ add_compile_options(
     -O2
     -mcpu=cortex-a57+crypto
     -mtune=cortex-a57
-    -ffast-math
+    -fno-math-errno
+    -fno-trapping-math
     -ftree-vectorize
     -fomit-frame-pointer
     -Wall

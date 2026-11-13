@@ -237,3 +237,158 @@ void sub_000123C0(void)
     eax = dst_va;
     esp += 16;
 }
+
+void sub_00012600(void)
+{
+    const float *a = (const float *)&MEM8(ecx);
+    const float *b = (const float *)&MEM8(MEM32(esp + 4));
+    float dot = (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2];
+    g_fp_top = (g_fp_top + 7u) & 7u;
+    g_fp_stack[g_fp_top] = (double)dot;
+    g_eflags &= ~1u;
+    esp += 8;
+}
+
+void sub_00012640(void)
+{
+    uint32_t dst_va = ecx;
+    const float *a = (const float *)&MEM8(MEM32(esp + 4));
+    const float *b = (const float *)&MEM8(MEM32(esp + 8));
+    float *dst = (float *)&MEM8(dst_va);
+    float aw = a[3];
+    float x = a[1] * b[2] - a[2] * b[1];
+    float y = a[2] * b[0] - a[0] * b[2];
+    float z = a[0] * b[1] - a[1] * b[0];
+    dst[0] = x;
+    dst[1] = y;
+    dst[2] = z;
+    dst[3] = aw;
+    eax = dst_va;
+    g_eflags &= ~1u;
+    esp += 12;
+}
+
+void sub_000126A0(void)
+{
+    uint32_t dst_va = ecx;
+    float scale = MEMF(esp + 4);
+    const float *src = (const float *)&MEM8(MEM32(esp + 8));
+    float *dst = (float *)&MEM8(dst_va);
+#ifdef __aarch64__
+    vst1q_f32(dst, vmulq_n_f32(vld1q_f32(src), scale));
+#else
+    dst[0] = src[0] * scale;
+    dst[1] = src[1] * scale;
+    dst[2] = src[2] * scale;
+    dst[3] = src[3] * scale;
+#endif
+    eax = dst_va;
+    g_eflags &= ~1u;
+    esp += 12;
+}
+
+void sub_00012720(void)
+{
+    uint32_t dst_va = ecx;
+    const float *mat = (const float *)&MEM8(MEM32(esp + 4));
+    const float *vec = (const float *)&MEM8(MEM32(esp + 8));
+    float *dst = (float *)&MEM8(dst_va);
+#ifdef __aarch64__
+    float32x4_t v = vld1q_f32(vec);
+    float32x4_t m0 = vld1q_f32(mat + 0);
+    float32x4_t m1 = vld1q_f32(mat + 4);
+    float32x4_t m2 = vld1q_f32(mat + 8);
+    float32x4_t m3 = vld1q_f32(mat + 12);
+    float32x4_t res = vmulq_laneq_f32(m0, v, 0);
+    res = vfmaq_laneq_f32(res, m1, v, 1);
+    res = vfmaq_laneq_f32(res, m2, v, 2);
+    res = vfmaq_laneq_f32(res, m3, v, 3);
+    vst1q_f32(dst, res);
+#else
+    float out[4];
+    for (int i = 0; i < 4; i++) {
+        out[i] = mat[i] * vec[0] + mat[4 + i] * vec[1] + mat[8 + i] * vec[2] + mat[12 + i] * vec[3];
+    }
+    dst[0] = out[0]; dst[1] = out[1]; dst[2] = out[2]; dst[3] = out[3];
+#endif
+    eax = dst_va;
+    g_eflags &= ~1u;
+    esp += 12;
+}
+
+void sub_00012550(void)
+{
+    uint32_t dst_va = ecx;
+    const float *a = (const float *)&MEM8(MEM32(esp + 4));
+    const float *b = (const float *)&MEM8(MEM32(esp + 8));
+    float *dst = (float *)&MEM8(dst_va);
+#ifdef __aarch64__
+    vst1q_f32(dst, vaddq_f32(vld1q_f32(a), vld1q_f32(b)));
+#else
+    dst[0] = a[0] + b[0];
+    dst[1] = a[1] + b[1];
+    dst[2] = a[2] + b[2];
+    dst[3] = a[3] + b[3];
+#endif
+    eax = dst_va;
+    g_eflags &= ~1u;
+    esp += 12;
+}
+
+void sub_00012790(void)
+{
+    uint32_t dst_va = ecx;
+    const float *mat = (const float *)&MEM8(MEM32(esp + 4));
+    const float *vec = (const float *)&MEM8(MEM32(esp + 8));
+    float *dst = (float *)&MEM8(dst_va);
+#ifdef __aarch64__
+    float32x4_t v = vld1q_f32(vec);
+    float32x4_t m0 = vld1q_f32(mat + 0);
+    float32x4_t m1 = vld1q_f32(mat + 4);
+    float32x4_t m2 = vld1q_f32(mat + 8);
+    float32x4_t m3 = vld1q_f32(mat + 12);
+    float32x4_t res = vfmaq_laneq_f32(m3, m0, v, 0);
+    res = vfmaq_laneq_f32(res, m1, v, 1);
+    res = vfmaq_laneq_f32(res, m2, v, 2);
+    vst1q_f32(dst, res);
+#else
+    float out[4];
+    for (int i = 0; i < 4; i++) {
+        out[i] = mat[i] * vec[0] + mat[4 + i] * vec[1] + mat[8 + i] * vec[2] + mat[12 + i];
+    }
+    dst[0] = out[0]; dst[1] = out[1]; dst[2] = out[2]; dst[3] = out[3];
+#endif
+    eax = dst_va;
+    g_eflags &= ~1u;
+    esp += 12;
+}
+
+void sub_00011710(void)
+{
+    const float *q = (const float *)&MEM8(MEM32(esp + 4));
+    float *dst = (float *)&MEM8(ecx);
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const float x2 = x + x, y2 = y + y, z2 = z + z;
+    const float xx = x * x2, xy = x * y2, xz = x * z2;
+    const float yy = y * y2, yz = y * z2, zz = z * z2;
+    const float wx = w * x2, wy = w * y2, wz = w * z2;
+
+    dst[0]  = 1.0f - (yy + zz);
+    dst[1]  = xy + wz;
+    dst[2]  = xz - wy;
+    dst[3]  = 0.0f;
+
+    dst[4]  = xy - wz;
+    dst[5]  = 1.0f - (xx + zz);
+    dst[6]  = yz + wx;
+    dst[7]  = 0.0f;
+
+    dst[8]  = xz + wy;
+    dst[9]  = yz - wx;
+    dst[10] = 1.0f - (xx + yy);
+    dst[11] = 0.0f;
+
+    dst[15] = 1.0f;
+    g_eflags &= ~1u;
+    esp += 8;
+}

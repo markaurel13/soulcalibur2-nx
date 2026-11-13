@@ -617,6 +617,8 @@ static void pc_sampler_worker(void *arg) {
     u32 page_info = 0;
     if (R_FAILED(svcQueryMemory(&mem_info, &page_info, (u64)&Switch_StartWatchdog))) return;
     const uint64_t text_base = mem_info.addr;
+    const uint64_t svc_off = (uint64_t)(uintptr_t)&svcSendSyncRequest - text_base;
+    const uint64_t memcpy_off = (uint64_t)(uintptr_t)&memcpy - text_base;
 
     uint64_t window_start = armGetSystemTick();
     uint32_t total = 0, out_of_range = 0;
@@ -642,9 +644,9 @@ static void pc_sampler_worker(void *arg) {
         s_pc_hist[slot]++;
 
         uint32_t lr_off = (ctx.lr >= text_base && ctx.lr - text_base < 0x2000000ULL) ? (uint32_t)(ctx.lr - text_base) : 0u;
-        if (rel >= 0x010E0EA0ULL && rel < 0x010E1400ULL) {
+        if (rel + 0x140ULL >= svc_off && rel < svc_off + 0x100ULL) {
             record_caller(s_svc_callers, (uint32_t)rel, lr_off);
-        } else if (rel >= 0x0115E000ULL && rel < 0x01168000ULL) {
+        } else if (rel >= memcpy_off && rel < memcpy_off + 0x400ULL) {
             record_caller(s_mem_callers, (uint32_t)rel, lr_off);
         }
 
@@ -696,7 +698,7 @@ void Switch_StartWatchdog(void) {
         if (R_SUCCEEDED(threadCreate(&s_sampler_thread, sampler_worker, NULL, s_sampler_stack, sizeof(s_sampler_stack), 0x2C, 2))) {
             threadStart(&s_sampler_thread);
         }
-#else
+#elif defined(SC2_PC_PROFILE)
         s_pc_sampler_running.store(true, std::memory_order_relaxed);
         if (R_SUCCEEDED(threadCreate(&s_pc_sampler_thread, pc_sampler_worker, NULL, s_pc_sampler_stack, sizeof(s_pc_sampler_stack), 0x28, 1))) {
             threadStart(&s_pc_sampler_thread);

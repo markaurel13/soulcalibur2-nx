@@ -9,6 +9,7 @@
 
 #define RECOMP_GENERATED_CODE
 #include "recomp_funcs.h"
+#include "sc2_fast_mem.h"
 #include "sc2_prof.h"
 #include <math.h>
 #include <stdint.h>

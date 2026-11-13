@@ -58,11 +58,15 @@ struct WorkerState {
     alignas(64) std::atomic<bool> busy{false};
     std::atomic<bool> sleeping{false};
     std::atomic<bool> flush_waiter{false};
+    std::atomic<bool> frame_waiter{false};
     std::atomic<bool> shutdown{false};
     bool active = false;
 
     uint8_t *push_arena = nullptr;
     uint32_t push_arena_used = 0;
+    uint32_t active_arena = 0;
+    std::atomic<uint64_t> frames_submitted{0};
+    std::atomic<uint64_t> frames_completed{0};
 
     uint8_t *inline_scratch = nullptr;
     uint16_t *seq_indices = nullptr;
@@ -111,6 +115,53 @@ static uint32_t s_prof_direct_cnt, s_prof_gather_cnt, s_prof_push_cnt;
 static uint64_t s_prof_exec_ticks, s_prof_flush_ticks, s_prof_enqueue_ticks;
 static uint32_t s_prof_wakeups, s_prof_full_spins;
 
+static inline void fastCopyNeon(uint8_t * __restrict__ dst, const uint8_t * __restrict__ src, size_t sz)
+{
+    while (sz >= 64u) {
+        __builtin_prefetch(src + 128, 0, 0);
+        vst1q_u8(dst + 0, vld1q_u8(src + 0));
+        vst1q_u8(dst + 16, vld1q_u8(src + 16));
+        vst1q_u8(dst + 32, vld1q_u8(src + 32));
+        vst1q_u8(dst + 48, vld1q_u8(src + 48));
+        dst += 64;
+        src += 64;
+        sz -= 64;
+    }
+    while (sz >= 16u) {
+        vst1q_u8(dst, vld1q_u8(src));
+        dst += 16;
+        src += 16;
+        sz -= 16;
+    }
+    if (sz >= 8u) {
+        uint64_t v;
+        __builtin_memcpy(&v, src, 8);
+        __builtin_memcpy(dst, &v, 8);
+        dst += 8;
+        src += 8;
+        sz -= 8;
+    }
+    if (sz >= 4u) {
+        uint32_t v;
+        __builtin_memcpy(&v, src, 4);
+        __builtin_memcpy(dst, &v, 4);
+        dst += 4;
+        src += 4;
+        sz -= 4;
+    }
+    if (sz >= 2u) {
+        uint16_t v;
+        __builtin_memcpy(&v, src, 2);
+        __builtin_memcpy(dst, &v, 2);
+        dst += 2;
+        src += 2;
+        sz -= 2;
+    }
+    if (sz > 0u) {
+        *dst = *src;
+    }
+}
+
 static inline void copyPresenterCommand(RecompD3dPresenterCommand *dst, const RecompD3dPresenterCommand *src)
 {
     dst->type = src->type;
@@ -129,7 +180,8 @@ static inline void copyPresenterCommand(RecompD3dPresenterCommand *dst, const Re
     }
     const RecompD3dPresenterDrawCommand &s = src->data.draw;
     RecompD3dPresenterDrawCommand &d = dst->data.draw;
-    std::memcpy(&d, &s, offsetof(RecompD3dPresenterDrawCommand, program));
+    fastCopyNeon(reinterpret_cast<uint8_t *>(&d), reinterpret_cast<const uint8_t *>(&s),
+                 offsetof(RecompD3dPresenterDrawCommand, program));
     if (s.program_count > 0u) {
         const uint32_t pc = s.program_count < 136u ? s.program_count : 136u;
         std::memcpy(d.program, s.program, pc * sizeof(d.program[0]));
@@ -146,9 +198,9 @@ static inline void copyPresenterCommand(RecompD3dPresenterCommand *dst, const Re
         d.directional.enabled = false;
     }
     const size_t tail_off = offsetof(RecompD3dPresenterDrawCommand, vertex_bytes);
-    std::memcpy(reinterpret_cast<uint8_t *>(&d) + tail_off,
-                reinterpret_cast<const uint8_t *>(&s) + tail_off,
-                sizeof(RecompD3dPresenterDrawCommand) - tail_off);
+    fastCopyNeon(reinterpret_cast<uint8_t *>(&d) + tail_off,
+                 reinterpret_cast<const uint8_t *>(&s) + tail_off,
+                 sizeof(RecompD3dPresenterDrawCommand) - tail_off);
 }
 
 void executeGatherDraw(RecompD3dPresenter *presenter, SwitchGatherDrawJob &job)
@@ -370,10 +422,19 @@ void workerLoop()
         const uint64_t te0 = worker_cntpct();
         WorkerJob &job = g_worker.jobs[h];
         switch (job.type) {
-        case JOB_DIRECT:
+        case JOB_DIRECT: {
             ++s_prof_direct_cnt;
+            const bool is_present = (job.data.direct.type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT);
             Switch_PresenterSubmitDirect(job.presenter, &job.data.direct);
+            if (is_present) {
+                g_worker.frames_completed.fetch_add(1u, std::memory_order_release);
+                if (g_worker.frame_waiter.load(std::memory_order_seq_cst)) {
+                    std::lock_guard<std::mutex> lock(g_worker.mutex);
+                    g_worker.cv_done.notify_all();
+                }
+            }
             break;
+        }
         case JOB_GATHER_DRAW:
             ++s_prof_gather_cnt;
             executeGatherDraw(job.presenter, job.data.gather);
@@ -407,7 +468,7 @@ void Switch_D3dWorkerInit(void)
 {
     if (g_worker.active) return;
     g_worker.jobs = static_cast<WorkerJob *>(std::calloc(MAX_WORKER_JOBS, sizeof(WorkerJob)));
-    g_worker.push_arena = static_cast<uint8_t *>(std::malloc(PUSH_ARENA_BYTES));
+    g_worker.push_arena = static_cast<uint8_t *>(std::malloc(PUSH_ARENA_BYTES * 2u));
     g_worker.inline_scratch = static_cast<uint8_t *>(std::malloc(MAX_INLINE_BYTES));
     g_worker.seq_indices = static_cast<uint16_t *>(std::malloc(65536u * sizeof(uint16_t)));
     g_worker.quad_indices = static_cast<uint16_t *>(std::malloc(65536u * 3u * sizeof(uint16_t) / 2u));
@@ -427,8 +488,12 @@ void Switch_D3dWorkerInit(void)
     g_worker.busy.store(false, std::memory_order_relaxed);
     g_worker.sleeping.store(false, std::memory_order_relaxed);
     g_worker.flush_waiter.store(false, std::memory_order_relaxed);
+    g_worker.frame_waiter.store(false, std::memory_order_relaxed);
     g_worker.shutdown.store(false, std::memory_order_relaxed);
     g_worker.push_arena_used = 0;
+    g_worker.active_arena = 0;
+    g_worker.frames_submitted.store(0u, std::memory_order_relaxed);
+    g_worker.frames_completed.store(0u, std::memory_order_relaxed);
     g_worker.active = true;
     g_worker.thread = std::thread(workerLoop);
 }
@@ -507,7 +572,7 @@ bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3
             uint32_t offset = 0u;
             uint8_t *dst = Switch_D3dWorkerAllocPushBytes(static_cast<uint32_t>(vtx_bytes), &offset);
             if (dst == nullptr) return false;
-            std::memcpy(dst, d.vertex_bytes, vtx_bytes);
+            fastCopyNeon(dst, static_cast<const uint8_t *>(d.vertex_bytes), vtx_bytes);
             d.vertex_bytes = dst;
         }
         const size_t idx_bytes = static_cast<size_t>(d.index_count) * sizeof(uint16_t);
@@ -516,7 +581,7 @@ bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3
             uint32_t offset = 0u;
             uint8_t *dst = Switch_D3dWorkerAllocPushBytes(static_cast<uint32_t>(idx_bytes), &offset);
             if (dst == nullptr) return false;
-            std::memcpy(dst, d.index_bytes, idx_bytes);
+            fastCopyNeon(dst, static_cast<const uint8_t *>(d.index_bytes), idx_bytes);
             d.index_bytes = dst;
         }
     }
@@ -550,8 +615,9 @@ uint8_t *Switch_D3dWorkerAllocPushBytes(uint32_t bytes, uint32_t *out_offset)
     if (g_worker.push_arena_used + aligned > PUSH_ARENA_BYTES) {
         return nullptr;
     }
-    *out_offset = g_worker.push_arena_used;
-    uint8_t *ptr = g_worker.push_arena + g_worker.push_arena_used;
+    const uint32_t base = g_worker.active_arena * PUSH_ARENA_BYTES;
+    *out_offset = base + g_worker.push_arena_used;
+    uint8_t *ptr = g_worker.push_arena + base + g_worker.push_arena_used;
     g_worker.push_arena_used += aligned;
     return ptr;
 }
@@ -605,6 +671,28 @@ void Switch_D3dWorkerFlush(void)
         g_worker.flush_waiter.store(false, std::memory_order_release);
     }
     g_worker.push_arena_used = 0;
+    s_prof_flush_ticks += (worker_cntpct() - tf0);
+}
+
+void Switch_D3dWorkerEndFrame(void)
+{
+    if (!g_worker.active) return;
+    const uint64_t tf0 = worker_cntpct();
+    if (g_worker.sleeping.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(g_worker.mutex);
+        g_worker.cv_work.notify_one();
+    }
+    const uint64_t sub = g_worker.frames_submitted.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    if ((sub - g_worker.frames_completed.load(std::memory_order_acquire)) >= 2u) {
+        std::unique_lock<std::mutex> lock(g_worker.mutex);
+        g_worker.frame_waiter.store(true, std::memory_order_seq_cst);
+        g_worker.cv_done.wait(lock, [sub] {
+            return (sub - g_worker.frames_completed.load(std::memory_order_acquire)) < 2u;
+        });
+        g_worker.frame_waiter.store(false, std::memory_order_release);
+    }
+    g_worker.active_arena ^= 1u;
+    g_worker.push_arena_used = 0u;
     s_prof_flush_ticks += (worker_cntpct() - tf0);
 }
 

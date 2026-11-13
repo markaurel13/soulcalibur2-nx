@@ -24,6 +24,44 @@
 #include <execinfo.h>
 #endif
 
+extern uint8_t *recomp_fast_ram;
+#ifndef RECOMP_XBOX_RAM_SIZE
+#define RECOMP_XBOX_RAM_SIZE (64u * 1024u * 1024u)
+#endif
+
+static inline uint8_t *sc2_da_mem(uint32_t addr, size_t width)
+{
+    if (__builtin_expect(recomp_fast_ram != NULL && !(addr >= 0xfd000000u && addr < 0xff000000u), 1)) {
+        const uint32_t norm = addr & 0x03ffffffu;
+        if (__builtin_expect((uint64_t)norm + width <= RECOMP_XBOX_RAM_SIZE, 1)) {
+            return recomp_fast_ram + norm;
+        }
+    }
+    return recomp_memory(addr, width);
+}
+
+static inline uint32_t *sc2_da_mem_u32(uint32_t addr)
+{
+    return (uint32_t *)(void *)sc2_da_mem(addr, 4u);
+}
+
+static inline void sc2_da_guest_load(void *dst, uint32_t src, size_t size)
+{
+    if (size == 0u) return;
+    if (__builtin_expect(recomp_fast_ram != NULL && !(src >= 0xfd000000u && src < 0xff000000u), 1)) {
+        const uint32_t norm = src & 0x03ffffffu;
+        if (__builtin_expect((uint64_t)norm + size <= RECOMP_XBOX_RAM_SIZE, 1)) {
+            memcpy(dst, recomp_fast_ram + norm, size);
+            return;
+        }
+    }
+    recomp_guest_load(dst, src, size);
+}
+
+#define recomp_memory sc2_da_mem
+#define recomp_memory_u32 sc2_da_mem_u32
+#define recomp_guest_load sc2_da_guest_load
+
 /* Soulcalibur II draw entry points, D3D8 5455. DOA2U's draw adapter at SC2's
    5455 offsets and addresses (tools/sc2/port_d3d.py); comments that name code
    addresses describe DOA2U's executable, where each rule was verified. Its

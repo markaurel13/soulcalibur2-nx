@@ -330,7 +330,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     if (Switch_D3dWorkerIsActive() && command != nullptr) {
         if (Switch_D3dWorkerEnqueueDirect(presenter, command)) {
             if (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT) {
-                Switch_D3dWorkerFlush();
+                Switch_D3dWorkerEndFrame();
             }
             return RECOMP_D3D_PRESENTER_OK;
         }

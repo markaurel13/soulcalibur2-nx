@@ -5,6 +5,7 @@
 
 #define RECOMP_GENERATED_CODE
 #include "recomp_funcs.h"
+#include "sc2_fast_mem.h"
 #include <stdint.h>
 #include "sc2_prof.h"
 

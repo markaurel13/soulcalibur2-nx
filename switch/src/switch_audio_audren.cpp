@@ -268,7 +268,7 @@ void SwitchAudio_FlushPending(void) {
     }
     static uint64_t s_last_audrv_tick = 0;
     uint64_t now = armGetSystemTick();
-    if (committed || (now - s_last_audrv_tick) >= (5ULL * 19200ULL)) {
+    if ((now - s_last_audrv_tick) >= (15ULL * 19200ULL)) {
         s_last_audrv_tick = now;
         perfAudrvUpdate();
     }
