@@ -1844,6 +1844,71 @@ static void drawFpsOverlay(RecompD3dPresenter *p, DkCmdBuf cmd, double fps, doub
     dkCmdBufDraw(cmd, DkPrimitive_Triangles, vtx_count, 1, 0, 0);
 }
 
+struct StageDiagCounters {
+    uint32_t nonblack_clear = 0;
+    uint32_t last_clear_color = 0;
+    uint32_t sub_vp = 0;
+    float last_vp[4] = {};
+    uint32_t sub_scissor = 0;
+    uint32_t last_scissor[4] = {};
+    uint32_t alpha_other = 0;
+    uint32_t last_alpha_func = 0;
+    uint32_t last_alpha_ref = 0;
+    uint32_t fog_draws = 0;
+    float last_fog_mode = 0.0f;
+    float last_fog_start = 0.0f;
+    float last_fog_end = 0.0f;
+    float last_fog_dens = 0.0f;
+    uint32_t blendop_draws = 0;
+    uint32_t last_blend_op = 0;
+    uint32_t last_blend_src = 0;
+    uint32_t last_blend_dst = 0;
+    uint32_t stencil_color = 0;
+    uint32_t ff_other = 0;
+    uint32_t last_ff_st = 0;
+    uint32_t last_ff_ak = 0;
+    uint32_t last_ff_fmt = 0;
+
+    // Letterbox tracking for Clear() clipping
+    uint32_t cur_sub_scissor_draws = 0;
+    uint32_t cur_min_y = 0xFFFFFFFFu;
+    uint32_t cur_max_y = 0;
+    uint32_t prev_sub_scissor_draws = 0;
+    uint32_t prev_min_y = 0;
+    uint32_t prev_max_y = 0;
+
+    // [ChurchDiag] fog / floor / fsh_color diagnostics
+    uint32_t comb_s1_count = 0;
+    uint32_t s1_tex1_missing = 0;
+    uint32_t last_s1_cin1 = 0;
+    uint32_t last_s1_tmode = 0;
+    uint32_t last_s1_fmt0 = 0;
+    uint32_t last_s1_fmt1 = 0;
+
+    // [TexDiag] offscreen / texture upload failure diagnostics
+    uint32_t offscreen_draws = 0;
+    uint32_t tex_upload_fails = 0;
+    uint32_t last_fail_fmt = 0;
+    uint32_t last_fail_w = 0;
+    uint32_t last_fail_h = 0;
+    uint32_t backbuf_tex_draws = 0;
+    uint32_t dump_target_frame = 0;
+    uint32_t dump_fc_logs = 0;
+    uint32_t dump_cf_logs = 0;
+    uint32_t fog_c23_nonone = 0;
+    float last_c23[4] = {};
+    uint32_t last_draw_fog_color = 0;
+    uint32_t fsh_color_draws = 0;
+    uint32_t last_fc_kind = 0;
+    uint32_t last_fc_st = 0;
+    uint32_t last_fc_blend = 0;
+    uint32_t last_fc_src = 0;
+    uint32_t last_fc_dst = 0;
+    uint32_t last_fc_tex = 0;
+    uint32_t last_fc_fmt = 0;
+};
+static StageDiagCounters g_sdiag;
+
 RecompD3dPresenterError d3d_backend_submit(
     RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command) {
     if (!presenter || !command) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
@@ -1870,11 +1935,25 @@ RecompD3dPresenterError d3d_backend_submit(
 
         if (command->data.clear.clear_color) {
             uint32_t c = command->data.clear.color;
+            if ((c & 0x00FFFFFFu) != 0u) {
+                ++g_sdiag.nonblack_clear;
+                g_sdiag.last_clear_color = c;
+            }
             float a = ((c >> 24) & 0xFF) / 255.0f;
             float r = ((c >> 16) & 0xFF) / 255.0f;
             float g = ((c >> 8) & 0xFF) / 255.0f;
             float b = (c & 0xFF) / 255.0f;
-            dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, r, g, b, a);
+            if (g_sdiag.prev_sub_scissor_draws > 10u && (c & 0x00FFFFFFu) != 0u &&
+                g_sdiag.prev_max_y > g_sdiag.prev_min_y) {
+                dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
+                DkScissor lb_scissor = { 0, g_sdiag.prev_min_y, presenter->width,
+                                         g_sdiag.prev_max_y - g_sdiag.prev_min_y };
+                dkCmdBufSetScissors(cmd, 0, &lb_scissor, 1);
+                dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, r, g, b, a);
+                dkCmdBufSetScissors(cmd, 0, &full_scissor, 1);
+            } else {
+                dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, r, g, b, a);
+            }
         }
         if (!command->data.clear.target.no_depth &&
             (command->data.clear.clear_depth || command->data.clear.clear_stencil)) {
@@ -1894,7 +1973,10 @@ RecompD3dPresenterError d3d_backend_submit(
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
         const RecompD3dPresenterDrawCommand &draw = command->data.draw;
         PerfScope perf_draw(&g_perf.t_draw_total);
-        if (draw.target.offscreen) return RECOMP_D3D_PRESENTER_OK;
+        if (draw.target.offscreen) {
+            ++g_sdiag.offscreen_draws;
+            return RECOMP_D3D_PRESENTER_OK;
+        }
         if (!draw.vertex_bytes || draw.vertex_count == 0) return RECOMP_D3D_PRESENTER_OK;
         if (!beginFrameIfNeeded(presenter)) {
             return RECOMP_D3D_PRESENTER_CLOSED;
@@ -1941,9 +2023,17 @@ RecompD3dPresenterError d3d_backend_submit(
                 dkCmdBufBarrier(ccmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
                 return MAX_TEX_CACHE + 1;
             }
+            if (is_front_buffer || is_backbuffer) ++g_sdiag.backbuf_tex_draws;
             uint32_t gpu_slot = lookupGpuCopySlot(presenter, desc.data, desc.width, desc.height);
             if (gpu_slot != 0) return gpu_slot;
-            return lookupOrUploadSingleTexture(presenter, desc, bytes, byte_count, pal, pal_count, false);
+            uint32_t r = lookupOrUploadSingleTexture(presenter, desc, bytes, byte_count, pal, pal_count, false);
+            if (r == 0u && bytes != nullptr && byte_count > 0u) {
+                ++g_sdiag.tex_upload_fails;
+                g_sdiag.last_fail_fmt = (uint32_t)desc.format_byte;
+                g_sdiag.last_fail_w = desc.width;
+                g_sdiag.last_fail_h = desc.height;
+            }
+            return r;
         };
 
         uint32_t tex_handles[3] = {};
@@ -2451,6 +2541,30 @@ RecompD3dPresenterError d3d_backend_submit(
                                 && draw.depth.alpha_test_enable
                                 && alpha_func != 7u /* RECOMP_D3D_CMP_ALWAYS */
                                 && draw.has_texture;
+        if (sub_viewport && (draw.viewport[1] > 0.5f || draw.viewport[3] < guest_h - 0.5f)) {
+            ++g_sdiag.sub_vp;
+            g_sdiag.last_vp[0] = draw.viewport[0];
+            g_sdiag.last_vp[1] = draw.viewport[1];
+            g_sdiag.last_vp[2] = draw.viewport[2];
+            g_sdiag.last_vp[3] = draw.viewport[3];
+        }
+        if (scissor.x > 0u || scissor.y > 0u || scissor.width < presenter->width || scissor.height < presenter->height) {
+            ++g_sdiag.sub_scissor;
+            g_sdiag.last_scissor[0] = scissor.x;
+            g_sdiag.last_scissor[1] = scissor.y;
+            g_sdiag.last_scissor[2] = scissor.width;
+            g_sdiag.last_scissor[3] = scissor.height;
+        }
+        if (scissor.y > 0u && (scissor.y + scissor.height) < presenter->height) {
+            ++g_sdiag.cur_sub_scissor_draws;
+            if (scissor.y < g_sdiag.cur_min_y) g_sdiag.cur_min_y = scissor.y;
+            if ((scissor.y + scissor.height) > g_sdiag.cur_max_y) g_sdiag.cur_max_y = scissor.y + scissor.height;
+        }
+        if (draw.depth.alpha_test_enable && alpha_func != 4u && alpha_func != 6u && alpha_func != 7u) {
+            ++g_sdiag.alpha_other;
+            g_sdiag.last_alpha_func = alpha_func;
+            g_sdiag.last_alpha_ref = (uint32_t)draw.depth.alpha_ref;
+        }
         const RecompD3dPixelProgram &pp = draw.pixel_program;
 
         DkShader const *chosen_fsh = nullptr;
@@ -2463,10 +2577,8 @@ RecompD3dPresenterError d3d_backend_submit(
         }
 
         static auto isSc2FastCombiner = [](const RecompD3dCombiners &c) -> bool {
-            bool valid_c0 = (c.color_input[0] == 0xc4c8c5c8u) || (c.color_input[0] == 0xc420c520u);
-            bool valid_a0 = (c.alpha_input[0] == 0xd4d81010u) || (c.alpha_input[0] == 0xd4d11010u);
-            if (!valid_c0 || c.color_output[0] != 0x00010c00u ||
-                !valid_a0 || c.alpha_output[0] != 0x000000c0u) {
+            if (c.color_input[0] != 0xc4c8c5c8u || c.color_output[0] != 0x00010c00u ||
+                c.alpha_input[0] != 0xd4d81010u || c.alpha_output[0] != 0x000000c0u) {
                 return false;
             }
             if (c.final0 != 0x130c0300u || c.final1 != 0x00001c80u) {
@@ -2514,7 +2626,7 @@ RecompD3dPresenterError d3d_backend_submit(
             }
             ++g_perf.fsh_fast;
         } else if (pp.kind == RECOMP_D3D_PIXEL_COMBINERS && (pp.combiners.control & 0xFFu) <= 2u) {
-            if (isSc2FastCombiner(pp.combiners)) {
+            if (draw.has_texture && isSc2FastCombiner(pp.combiners)) {
                 chosen_fsh = &presenter->fsh_comb_fast;
                 num_textures = 2;
                 ++g_perf.fsh_comb_fast_count;
@@ -2527,6 +2639,60 @@ RecompD3dPresenterError d3d_backend_submit(
             chosen_fsh = &presenter->fsh_tex;
             num_textures = 3;
             ++g_perf.fsh_gen;
+        }
+
+        if (draw.general_fog[0][0] > 0.5f) {
+            ++g_sdiag.fog_draws;
+            g_sdiag.last_fog_mode = draw.general_fog[0][1];
+            g_sdiag.last_fog_start = draw.general_fog[0][2];
+            g_sdiag.last_fog_end = draw.general_fog[0][3];
+            g_sdiag.last_fog_dens = draw.general_fog[2][0];
+        }
+        if (draw.blend.blend_enable && draw.blend.op != 0u) {
+            ++g_sdiag.blendop_draws;
+            g_sdiag.last_blend_op = (uint32_t)draw.blend.op;
+            g_sdiag.last_blend_src = (uint32_t)draw.blend.src_factor;
+            g_sdiag.last_blend_dst = (uint32_t)draw.blend.dst_factor;
+        }
+        if (!draw.target.no_depth && draw.depth.stencil_enable && color_mask != 0u) {
+            ++g_sdiag.stencil_color;
+        }
+        if (is_fast_path && chosen_fsh == &presenter->fsh_color && draw.has_texture &&
+            pp.kind == RECOMP_D3D_PIXEL_FIXED_FUNCTION &&
+            (pp.stage_count > 1u || pp.stages[0].color_op != 5u || pp.stages[0].alpha_op != 5u || pp.stages[0].alpha_kill)) {
+            ++g_sdiag.ff_other;
+            g_sdiag.last_ff_st = (uint32_t)pp.stage_count;
+            g_sdiag.last_ff_ak = (uint32_t)pp.stages[0].alpha_kill;
+            g_sdiag.last_ff_fmt = (uint32_t)draw.texture.format_byte;
+        }
+        if (chosen_fsh == &presenter->fsh_comb_fast) {
+            if ((pp.combiners.texture_modes & 0x20u) != 0u) {
+                ++g_sdiag.comb_s1_count;
+                g_sdiag.last_s1_cin1 = pp.combiners.color_input[1];
+                g_sdiag.last_s1_tmode = pp.combiners.texture_modes;
+                g_sdiag.last_s1_fmt0 = (uint32_t)draw.texture.format_byte;
+                g_sdiag.last_s1_fmt1 = (uint32_t)draw.stage_textures[1].desc.format_byte;
+                if (draw.stage_textures[1].bytes == nullptr || draw.stage_textures[1].byte_count == 0u) {
+                    ++g_sdiag.s1_tex1_missing;
+                }
+            }
+            if (draw.general_fog[0][0] > 0.5f) {
+                if (std::fabs(pp.constants[23][3] - 1.0f) > 0.01f) {
+                    ++g_sdiag.fog_c23_nonone;
+                    std::memcpy(g_sdiag.last_c23, pp.constants[23], sizeof(g_sdiag.last_c23));
+                    g_sdiag.last_draw_fog_color = draw.fog_color;
+                }
+            }
+        }
+        if (chosen_fsh == &presenter->fsh_color) {
+            ++g_sdiag.fsh_color_draws;
+            g_sdiag.last_fc_kind = (uint32_t)pp.kind;
+            g_sdiag.last_fc_st = (uint32_t)pp.stage_count;
+            g_sdiag.last_fc_blend = draw.blend.blend_enable ? 1u : 0u;
+            g_sdiag.last_fc_src = (uint32_t)draw.blend.src_factor;
+            g_sdiag.last_fc_dst = (uint32_t)draw.blend.dst_factor;
+            g_sdiag.last_fc_tex = draw.has_texture ? 1u : 0u;
+            g_sdiag.last_fc_fmt = (uint32_t)draw.texture.format_byte;
         }
 
         DkShader const* shaders[] = { use_gpu_vtx ? &presenter->vsh_ff : &presenter->vsh, chosen_fsh };
@@ -2885,10 +3051,61 @@ RecompD3dPresenterError d3d_backend_submit(
             ++g_perf.frames;
             if (presenter->draws_in_frame > g_perf.max_draws) g_perf.max_draws = presenter->draws_in_frame;
         }
+        g_sdiag.prev_sub_scissor_draws = g_sdiag.cur_sub_scissor_draws;
+        g_sdiag.prev_min_y = g_sdiag.cur_min_y;
+        g_sdiag.prev_max_y = g_sdiag.cur_max_y;
+        g_sdiag.cur_sub_scissor_draws = 0u;
+        g_sdiag.cur_min_y = 0xFFFFFFFFu;
+        g_sdiag.cur_max_y = 0u;
         if ((presenter->frame_counter % 120u) == 1u) {
             printf("[Deko3D] Frame %u: draws=%u tex_uploads=%u dyn_kb=%u\n",
                    presenter->frame_counter, presenter->draws_in_frame,
                    presenter->tex_uploads_in_frame, presenter->dyn_offset / 1024u);
+            if (g_sdiag.nonblack_clear || g_sdiag.sub_vp || g_sdiag.sub_scissor ||
+                g_sdiag.alpha_other || g_sdiag.fog_draws || g_sdiag.blendop_draws ||
+                g_sdiag.stencil_color || g_sdiag.ff_other) {
+                printf("[StageDiag] clr=%u(0x%08x) vp=%u(%.0f,%.0f,%.0f,%.0f) sc=%u(%u,%u,%u,%u) af=%u(%u,%u) fog=%u(m=%.0f,%.1f..%.1f,d=%.4f) bop=%u(%u,%u,%u) stc=%u ffo=%u(st=%u,ak=%u,fmt=0x%x)\n",
+                       g_sdiag.nonblack_clear, g_sdiag.last_clear_color,
+                       g_sdiag.sub_vp, g_sdiag.last_vp[0], g_sdiag.last_vp[1], g_sdiag.last_vp[2], g_sdiag.last_vp[3],
+                       g_sdiag.sub_scissor, g_sdiag.last_scissor[0], g_sdiag.last_scissor[1], g_sdiag.last_scissor[2], g_sdiag.last_scissor[3],
+                       g_sdiag.alpha_other, g_sdiag.last_alpha_func, g_sdiag.last_alpha_ref,
+                       g_sdiag.fog_draws, g_sdiag.last_fog_mode, g_sdiag.last_fog_start, g_sdiag.last_fog_end, g_sdiag.last_fog_dens,
+                       g_sdiag.blendop_draws, g_sdiag.last_blend_op, g_sdiag.last_blend_src, g_sdiag.last_blend_dst,
+                       g_sdiag.stencil_color, g_sdiag.ff_other, g_sdiag.last_ff_st, g_sdiag.last_ff_ak, g_sdiag.last_ff_fmt);
+            }
+            if (g_sdiag.fog_draws > 0u) {
+                printf("[ChurchDiag] comb_s1=%u(miss=%u,cin1=0x%08x,tm=0x%x,f0=0x%x,f1=0x%x) fog_c23_nonone=%u c23=(%.2f,%.2f,%.2f,%.2f) dfog=0x%08x fsh_col=%u(k=%u,st=%u,b=%u,%u,%u,tx=%u,fmt=0x%x)\n",
+                       g_sdiag.comb_s1_count, g_sdiag.s1_tex1_missing,
+                       g_sdiag.last_s1_cin1, g_sdiag.last_s1_tmode, g_sdiag.last_s1_fmt0, g_sdiag.last_s1_fmt1,
+                       g_sdiag.fog_c23_nonone,
+                       g_sdiag.last_c23[0], g_sdiag.last_c23[1], g_sdiag.last_c23[2], g_sdiag.last_c23[3],
+                       g_sdiag.last_draw_fog_color, g_sdiag.fsh_color_draws,
+                       g_sdiag.last_fc_kind, g_sdiag.last_fc_st, g_sdiag.last_fc_blend,
+                       g_sdiag.last_fc_src, g_sdiag.last_fc_dst, g_sdiag.last_fc_tex, g_sdiag.last_fc_fmt);
+            }
+            if (g_sdiag.offscreen_draws || g_sdiag.tex_upload_fails || g_sdiag.backbuf_tex_draws) {
+                printf("[TexDiag] offscreen=%u tex_fail=%u(fmt=0x%x,%ux%u) backbuf_tex=%u\n",
+                       g_sdiag.offscreen_draws, g_sdiag.tex_upload_fails,
+                       g_sdiag.last_fail_fmt, g_sdiag.last_fail_w, g_sdiag.last_fail_h,
+                       g_sdiag.backbuf_tex_draws);
+            }
+            uint32_t prev_sub = g_sdiag.prev_sub_scissor_draws;
+            uint32_t prev_miny = g_sdiag.prev_min_y;
+            uint32_t prev_maxy = g_sdiag.prev_max_y;
+            uint32_t next_dump = g_sdiag.dump_target_frame;
+            if (g_sdiag.dump_cf_logs > 0u) {
+                next_dump = 0xFFFFFFFFu;
+            } else if (next_dump != 0xFFFFFFFFu && presenter->frame_counter > next_dump) {
+                next_dump = 0u;
+            }
+            if (next_dump == 0u && g_sdiag.fog_draws > 10000u && g_sdiag.last_clear_color == 0xff98a1aa) {
+                next_dump = presenter->frame_counter + 5u;
+            }
+            g_sdiag = StageDiagCounters{};
+            g_sdiag.prev_sub_scissor_draws = prev_sub;
+            g_sdiag.prev_min_y = prev_miny;
+            g_sdiag.prev_max_y = prev_maxy;
+            g_sdiag.dump_target_frame = next_dump;
             if (g_perf.frames > 1) {
                 double n = (double)g_perf.frames;
                 double wall_avg = perfMs(g_perf.wall_sum) / (n - 1.0);

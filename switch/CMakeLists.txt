@@ -335,6 +335,7 @@ target_link_options(soulcalibur2
     -Wl,--wrap=nanosleep
     -Wl,--wrap=recomp_audio_output_submit
     -Wl,--wrap=recomp_audio_output_reset_voice
+    -Wl,--wrap=CreateFileA
     -Wl,--wrap=sub_000843D0
     -Wl,--wrap=sub_0004B630
     -Wl,--wrap=sub_0004D090

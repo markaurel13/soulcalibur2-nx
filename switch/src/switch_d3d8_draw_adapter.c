@@ -2629,7 +2629,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->has_transform = false;
     draw->screen_space_offset[0] = 0.0f;
     draw->screen_space_offset[1] = 0.0f;
-    memset(&draw->use_texture_factor, 0, offsetof(RecompD3dPresenterDrawCommand, has_alpha_mask) - offsetof(RecompD3dPresenterDrawCommand, use_texture_factor));
+    memset(&draw->use_texture_factor, 0, offsetof(RecompD3dPresenterDrawCommand, pixel_program) - offsetof(RecompD3dPresenterDrawCommand, use_texture_factor));
     draw->pixel_program.kind = RECOMP_D3D_PIXEL_NONE;
     draw->pixel_program.stage_count = 0u;
     draw->pixel_program.specular_add = false;
@@ -2959,7 +2959,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->cull_mode = state->cull_mode == 0x900u ? RECOMP_D3D_CULL_CLOCKWISE :
         state->cull_mode == 0x901u ? RECOMP_D3D_CULL_COUNTER_CLOCKWISE : RECOMP_D3D_CULL_NONE;
     draw->texture_factor = state->texture_factor;
-    const bool is_shadow_null = ((draw->blend.color_write_mask & 0x0fu) == 0u) && !program;
+    const bool is_shadow_null = ((draw->blend.color_write_mask & 0x0fu) == 0u) && !program &&
+                                !(draw->depth.alpha_test_enable && draw->depth.alpha_func != 7u);
     if (!is_shadow_null) {
         uint64_t tt0 = read_cntpct();
         memset(draw->stage_textures, 0, sizeof draw->stage_textures);
@@ -3284,6 +3285,27 @@ static bool try_offload_push_shadow(uint32_t start, uint32_t end)
     if (end - start < 8u || *recomp_memory_u32(start) != 0x000417fcu) {
         ++s_push_fail[6];
         return false;
+    }
+
+    {
+        uint32_t p = start;
+        while (p + 4u <= end) {
+            const uint32_t cmd = *recomp_memory_u32(p);
+            const uint32_t top = cmd & 0xe0000003u;
+            if (top != 0u && top != 0x40000000u) {
+                ++s_push_fail[6];
+                return false;
+            }
+            const uint32_t method = cmd & 0x1fffu;
+            const uint32_t count = (cmd >> 18u) & 0x7ffu;
+            const bool non_inc = (cmd & 0x40000000u) != 0u;
+            const uint32_t last_m = non_inc ? method : (method + (count > 0u ? (count - 1u) * 4u : 0u));
+            if (last_m >= 0x300u && method <= 0x388u) {
+                ++s_push_fail[6];
+                return false;
+            }
+            p += 4u + count * 4u;
+        }
     }
 
     if (model_view_active) {

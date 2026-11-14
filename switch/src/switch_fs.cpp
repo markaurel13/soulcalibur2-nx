@@ -66,3 +66,42 @@ std::string ResolvePath(const std::string& inputPath) {
 }
 
 } // namespace SwitchFS
+
+extern "C" {
+void *__real_CreateFileA(
+    const char *lpFileName,
+    uint32_t dwDesiredAccess,
+    uint32_t dwShareMode,
+    void *lpSecurityAttributes,
+    uint32_t dwCreationDisposition,
+    uint32_t dwFlagsAndAttributes,
+    void *hTemplateFile);
+
+/* On Nintendo Switch (libnx sdmc:), stat()/fstat() does not provide unique
+   st_ino values across files, so win32_compat.c's (st_dev, st_ino) sharing
+   check falsely collides save-file writes against open read-only disc files
+   (e.g. guests.olk / movie.afs) and returns ERROR_SHARING_VIOLATION (0xc0000043).
+   Guest-level sharing for profile paths is still enforced by kernel_file.c's
+   profile_sharing_conflict() using host_path. */
+void *__wrap_CreateFileA(
+    const char *lpFileName,
+    uint32_t dwDesiredAccess,
+    uint32_t dwShareMode,
+    void *lpSecurityAttributes,
+    uint32_t dwCreationDisposition,
+    uint32_t dwFlagsAndAttributes,
+    void *hTemplateFile)
+{
+    const uint32_t share_all = dwShareMode | 0x7u; /* FILE_SHARE_READ | WRITE | DELETE */
+    void *res = __real_CreateFileA(
+        lpFileName, dwDesiredAccess, share_all,
+        lpSecurityAttributes, dwCreationDisposition,
+        dwFlagsAndAttributes, hTemplateFile);
+    if (lpFileName && (dwDesiredAccess & 0x40000000u) != 0u &&
+        (strstr(lpFileName, "sc2_") != nullptr || strstr(lpFileName, "SaveMeta") != nullptr)) {
+        printf("[SwitchFS] Save write CreateFileA('%s', disp=%u, orig_share=0x%x) -> %p\n",
+               lpFileName, dwCreationDisposition, dwShareMode, res);
+    }
+    return res;
+}
+}
