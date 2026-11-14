@@ -263,6 +263,7 @@ int main(int argc, char *argv[]) {
     printf("\n========================================\n");
     printf("  Soulcalibur II (Xbox) - Switch Port  \n");
     printf("  Static Recompilation via Deko3D       \n");
+    printf("  Build: %s %s\n", __DATE__, __TIME__);
     printf("========================================\n\n");
 
     printf("[Main] Red/Socket rc=0x%08X, nxlink_sock=%d\n", sock_rc, s_nxlink_sock);

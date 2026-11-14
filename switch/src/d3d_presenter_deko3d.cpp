@@ -1,6 +1,7 @@
 #include "d3d_presenter_backend.h"
 #include "d3d_draw_model.h"
 #include "sc2_shaders.h"
+#include "sc2_ff_shaders.h"
 #include "font8x8.h"
 #include "switch_watchdog.h"
 
@@ -380,6 +381,7 @@ struct RecompD3dPresenter {
     DkShader fsh_null;
     DkShader fsh_null_alpha;
     DkShader fsh_color;
+    DkShader fsh_ff_mod2x;
     DkShader fsh_comb_fast;
     DkShader fsh_comb2;
     DkShader fsh_tex;
@@ -1450,6 +1452,13 @@ RecompD3dPresenterError d3d_backend_create(
     dkShaderInitialize(&p->fsh_color, &fshColorMaker);
     code_offset += (sizeof(sc2_color_fsh_dksh) + DK_SHADER_CODE_ALIGNMENT - 1) & ~(DK_SHADER_CODE_ALIGNMENT - 1);
 
+    // Fragment Shader (Specialized 1-Stage Fixed Function MODULATE2X tex0*diffuse)
+    memcpy(code_cpu + code_offset, sc2_ff_mod2x_fsh_dksh, sizeof(sc2_ff_mod2x_fsh_dksh));
+    DkShaderMaker fshFfMod2xMaker;
+    dkShaderMakerDefaults(&fshFfMod2xMaker, p->block_code, code_offset);
+    dkShaderInitialize(&p->fsh_ff_mod2x, &fshFfMod2xMaker);
+    code_offset += (sizeof(sc2_ff_mod2x_fsh_dksh) + DK_SHADER_CODE_ALIGNMENT - 1) & ~(DK_SHADER_CODE_ALIGNMENT - 1);
+
     // Fragment Shader (Fast Direct Combiner for SC2 standard materials)
     memcpy(code_cpu + code_offset, sc2_comb_fast_fsh_dksh, sizeof(sc2_comb_fast_fsh_dksh));
     DkShaderMaker fshCombFastMaker;
@@ -1980,8 +1989,10 @@ RecompD3dPresenterError d3d_backend_submit(
         const bool sub_viewport = draw.has_transform && !draw.program_count && draw.viewport[2] > 0.0f;
         const float vp_w = sub_viewport ? draw.viewport[2] : guest_w;
         const float vp_h = sub_viewport ? draw.viewport[3] : guest_h;
-        const float dx_offset = (vp_w > 0.0f) ? (2.0f * draw.screen_space_offset[0] / vp_w) : 0.0f;
-        const float dy_offset = (vp_h > 0.0f) ? (-2.0f * draw.screen_space_offset[1] / vp_h) : 0.0f;
+        const float sso_x = (std::fabs(draw.screen_space_offset[0]) > 0.6f) ? draw.screen_space_offset[0] : 0.0f;
+        const float sso_y = (std::fabs(draw.screen_space_offset[1]) > 0.6f) ? draw.screen_space_offset[1] : 0.0f;
+        const float dx_offset = (vp_w > 0.0f) ? (2.0f * sso_x / vp_w) : 0.0f;
+        const float dy_offset = (vp_h > 0.0f) ? (-2.0f * sso_y / vp_h) : 0.0f;
 
         const bool has_normal = (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && layout.normal_offset + 12 <= stride);
         const bool has_diffuse = (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT && layout.diffuse_offset + 4 <= stride);
@@ -2483,8 +2494,24 @@ RecompD3dPresenterError d3d_backend_submit(
                 ++g_perf.fsh_null_alpha_count;
             }
         } else if (is_fast_path) {
-            chosen_fsh = &presenter->fsh_color;
-            num_textures = 2;
+            const bool is_ff_mod2x = (pp.kind == 1u /* RECOMP_D3D_PIXEL_FIXED_FUNCTION */)
+                && (pp.stage_count == 1u)
+                && (draw.general_fog[0][0] <= 0.5f)
+                && (!draw.depth.alpha_test_enable
+                    || alpha_func == 4u /* RECOMP_D3D_COMPARE_GREATER */
+                    || alpha_func == 6u /* RECOMP_D3D_COMPARE_GREATER_EQUAL */)
+                && (pp.stages[0].color_op == 5u && pp.stages[0].alpha_op == 5u)
+                && (pp.stages[0].color_arg[1] == 2u && pp.stages[0].color_arg[2] == 0u)
+                && (pp.stages[0].alpha_arg[1] == 2u && pp.stages[0].alpha_arg[2] == 0u)
+                && (pp.stages[0].result_arg == 1u && pp.stages[0].texcoord == 0u)
+                && pp.stages[0].sampled && !pp.stages[0].alpha_kill;
+            if (is_ff_mod2x) {
+                chosen_fsh = &presenter->fsh_ff_mod2x;
+                num_textures = 1;
+            } else {
+                chosen_fsh = &presenter->fsh_color;
+                num_textures = 2;
+            }
             ++g_perf.fsh_fast;
         } else if (pp.kind == RECOMP_D3D_PIXEL_COMBINERS && (pp.combiners.control & 0xFFu) <= 2u) {
             if (isSc2FastCombiner(pp.combiners)) {
@@ -2662,7 +2689,7 @@ RecompD3dPresenterError d3d_backend_submit(
             }
             if (chosen_fsh == &presenter->fsh_comb_fast) meta.fsh_type = 5;
             else if (chosen_fsh == &presenter->fsh_comb2) meta.fsh_type = 3;
-            else if (chosen_fsh == &presenter->fsh_color) meta.fsh_type = 2;
+            else if (chosen_fsh == &presenter->fsh_color || chosen_fsh == &presenter->fsh_ff_mod2x) meta.fsh_type = 2;
             else if (chosen_fsh == &presenter->fsh_tex) meta.fsh_type = 4;
             else if (chosen_fsh == &presenter->fsh_null_alpha) meta.fsh_type = 1;
             else meta.fsh_type = 0;
