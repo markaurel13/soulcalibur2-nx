@@ -124,42 +124,89 @@ static void pixel_method(uint32_t method, uint32_t value)
         recomp_stop(2, "d3d8:pixel-method:%08x:%08x", method, value);
 }
 
+static uint32_t s_psh_cache_device = 0u;
+static uint32_t s_psh_cache_words[57];
+static uint32_t s_psh_cache_inputs = 0u;
+static bool s_psh_cache_valid = false;
+
 static void pixel_set(void)
 {
     const uint32_t device = recomp_d3d8_require_device(), handle = kernel_arg(1u);
     if (handle == 0u) {
+        s_psh_cache_valid = false;
         *recomp_memory_u32(DIRTY) |= 0x4800u;
         if (*recomp_memory_u32(device + 0x370u) != 0u) *recomp_memory_u32(DIRTY) |= 0x2000u;
     } else {
         const uint32_t data = definition(handle);
-        const uint32_t inputs = *recomp_memory_u32(data + 0x20u) | *recomp_memory_u32(data + 0x24u);
+        const uint32_t *src = (const uint32_t *)recomp_memory(data, 0xe4u);
+        const uint32_t inputs = src[8] | src[9];
         if (inputs == 0u && *recomp_memory_u32(device + 0x370u) != 0u)
             *recomp_memory_u32(DIRTY) |= 0x2000u;
         *recomp_memory_u32(device + 0x370u) = inputs;
         *recomp_memory_u32(device + 0x374u) = *recomp_memory_u32(data + 0xecu) & 0x100u;
-        *recomp_memory_u32(device + 0x378u) = *recomp_memory_u32(data + 0xd8u);
+        *recomp_memory_u32(device + 0x378u) = src[54];
         *recomp_memory_u32(DIRTY) |= 0x4000u;
-        if ((*recomp_memory_u32(device + 8u) & 0x10u) == 0u) {
-            recomp_guest_memcpy(PIXEL_SHADOW, data, 0xe4u);
-            *recomp_memory_u32(0x0015e5b0u) = *recomp_memory_u32(data + 0xd8u);
-        }
-        for (uint32_t i = 0u; i < 8u; ++i) {
-            pixel_method(0x40260u + i * 4u, *recomp_memory_u32(data + i * 4u));
-            pixel_method(0x40a60u + i * 4u, *recomp_memory_u32(data + 0x28u + i * 4u));
-            pixel_method(0x40a80u + i * 4u, *recomp_memory_u32(data + 0x48u + i * 4u));
-            pixel_method(0x40aa0u + i * 4u, *recomp_memory_u32(data + 0x68u + i * 4u));
-            pixel_method(0x40ac0u + i * 4u, *recomp_memory_u32(data + 0x88u + i * 4u));
-            pixel_method(0x41e40u + i * 4u, *recomp_memory_u32(data + 0xb4u + i * 4u));
-        }
-        pixel_method(0x417f8u, *recomp_memory_u32(data + 0xa8u));
-        pixel_method(0x41e20u, *recomp_memory_u32(data + 0xacu));
-        pixel_method(0x41e24u, *recomp_memory_u32(data + 0xb0u));
-        pixel_method(0x41e60u, *recomp_memory_u32(data + 0xd4u));
-        pixel_method(0x41e74u, *recomp_memory_u32(data + 0xdcu));
-        pixel_method(0x41e78u, *recomp_memory_u32(data + 0xe0u));
-        if (inputs != 0u) {
-            pixel_method(0x40288u, *recomp_memory_u32(data + 0x20u));
-            pixel_method(0x4028cu, *recomp_memory_u32(data + 0x24u));
+        const bool shadow_on = ((*recomp_memory_u32(device + 8u) & 0x10u) == 0u);
+        const bool cache_hit = s_psh_cache_valid && shadow_on &&
+                               s_psh_cache_device == device &&
+                               *recomp_memory_u32(device + PIXEL_HANDLE) != 0u;
+        if (cache_hit && memcmp(s_psh_cache_words, src, 0xe4u) == 0) {
+            /* All 57 words in PIXEL_SHADOW and render_state already match */
+        } else if (cache_hit) {
+            memcpy(recomp_memory(PIXEL_SHADOW, 0xe4u), src, 0xe4u);
+            if (src[54] != s_psh_cache_words[54])
+                *recomp_memory_u32(0x0015e5b0u) = src[54];
+            for (uint32_t i = 0u; i < 8u; ++i) {
+                if (src[i]      != s_psh_cache_words[i])      pixel_method(0x40260u + i * 4u, src[i]);
+                if (src[10 + i] != s_psh_cache_words[10 + i]) pixel_method(0x40a60u + i * 4u, src[10 + i]);
+                if (src[18 + i] != s_psh_cache_words[18 + i]) pixel_method(0x40a80u + i * 4u, src[18 + i]);
+                if (src[26 + i] != s_psh_cache_words[26 + i]) pixel_method(0x40aa0u + i * 4u, src[26 + i]);
+                if (src[34 + i] != s_psh_cache_words[34 + i]) pixel_method(0x40ac0u + i * 4u, src[34 + i]);
+                if (src[45 + i] != s_psh_cache_words[45 + i]) pixel_method(0x41e40u + i * 4u, src[45 + i]);
+            }
+            if (src[42] != s_psh_cache_words[42]) pixel_method(0x417f8u, src[42]);
+            if (src[43] != s_psh_cache_words[43]) pixel_method(0x41e20u, src[43]);
+            if (src[44] != s_psh_cache_words[44]) pixel_method(0x41e24u, src[44]);
+            if (src[53] != s_psh_cache_words[53]) pixel_method(0x41e60u, src[53]);
+            if (src[55] != s_psh_cache_words[55]) pixel_method(0x41e74u, src[55]);
+            if (src[56] != s_psh_cache_words[56]) pixel_method(0x41e78u, src[56]);
+            if (inputs != 0u && (s_psh_cache_inputs == 0u ||
+                                 src[8] != s_psh_cache_words[8] ||
+                                 src[9] != s_psh_cache_words[9])) {
+                pixel_method(0x40288u, src[8]);
+                pixel_method(0x4028cu, src[9]);
+            }
+            memcpy(s_psh_cache_words, src, 0xe4u);
+            s_psh_cache_inputs = inputs;
+        } else {
+            if (shadow_on) {
+                memcpy(recomp_memory(PIXEL_SHADOW, 0xe4u), src, 0xe4u);
+                *recomp_memory_u32(0x0015e5b0u) = src[54];
+            }
+            for (uint32_t i = 0u; i < 8u; ++i) {
+                pixel_method(0x40260u + i * 4u, src[i]);
+                pixel_method(0x40a60u + i * 4u, src[10 + i]);
+                pixel_method(0x40a80u + i * 4u, src[18 + i]);
+                pixel_method(0x40aa0u + i * 4u, src[26 + i]);
+                pixel_method(0x40ac0u + i * 4u, src[34 + i]);
+                pixel_method(0x41e40u + i * 4u, src[45 + i]);
+            }
+            pixel_method(0x417f8u, src[42]);
+            pixel_method(0x41e20u, src[43]);
+            pixel_method(0x41e24u, src[44]);
+            pixel_method(0x41e60u, src[53]);
+            pixel_method(0x41e74u, src[55]);
+            pixel_method(0x41e78u, src[56]);
+            if (inputs != 0u) {
+                pixel_method(0x40288u, src[8]);
+                pixel_method(0x4028cu, src[9]);
+            }
+            if (shadow_on) {
+                s_psh_cache_device = device;
+                memcpy(s_psh_cache_words, src, 0xe4u);
+                s_psh_cache_inputs = inputs;
+                s_psh_cache_valid = true;
+            }
         }
     }
     *recomp_memory_u32(device + PIXEL_HANDLE) = handle;
@@ -168,6 +215,7 @@ static void pixel_set(void)
 
 static void pixel_constant(void)
 {
+    s_psh_cache_valid = false;
     const uint32_t device = recomp_d3d8_require_device();
     const uint32_t data = definition(*recomp_memory_u32(device + PIXEL_HANDLE));
     const uint32_t first = kernel_arg(1u), source = kernel_arg(2u), count = kernel_arg(3u);
@@ -235,6 +283,51 @@ static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDr
     const uint32_t resource = *recomp_memory_u32(device + 0xb68u + stage * 4u);
     if (!recomp_d3d8_resource_inline_texture(stage, &draw->texture)) {
         if (resource == 0u) return;
+        struct TexAttachCacheEntry {
+            bool valid;
+            uint32_t resource;
+            uint8_t raw_hdr[20];
+            uint32_t palette_res;
+            uint32_t palette_data;
+            uint32_t backbuf_data0;
+            uint32_t backbuf_data1;
+            RecompD3dTextureDesc desc;
+            const void *texture_bytes;
+            uint32_t texture_byte_count;
+            const void *palette_bytes;
+            uint32_t palette_byte_count;
+            bool is_backbuffer;
+            bool is_front_buffer;
+        };
+        static struct TexAttachCacheEntry s_tex_cache[32];
+        struct TexAttachCacheEntry *e = &s_tex_cache[(resource >> 4u) & 31u];
+        const void *hdr = recomp_memory(resource, 20u);
+        const uint32_t bb0 = *recomp_memory_u32(device + 0x1604u + 4u);
+        const uint32_t bb1 = *recomp_memory_u32(device + 0x1604u + 24u + 4u);
+        if (e->valid && e->resource == resource && memcmp(e->raw_hdr, hdr, 20u) == 0 &&
+            e->backbuf_data0 == bb0 && e->backbuf_data1 == bb1) {
+            bool pal_ok = true;
+            if (e->desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8) {
+                const uint32_t pal = *recomp_memory_u32(device + 0xb78u + stage * 4u);
+                if (pal == 0u || pal != e->palette_res || *recomp_memory_u32(pal + 4u) != e->palette_data) {
+                    pal_ok = false;
+                }
+            }
+            if (pal_ok) {
+                draw->texture = e->desc;
+                draw->texture_bytes = e->texture_bytes;
+                draw->texture_byte_count = e->texture_byte_count;
+                draw->has_texture = true;
+                draw->address_u = *recomp_memory_u32(STAGES + stage * 128u);
+                draw->address_v = *recomp_memory_u32(STAGES + stage * 128u + 4u);
+                draw->address_w = *recomp_memory_u32(STAGES + stage * 128u + 8u);
+                draw->palette_bytes = e->palette_bytes;
+                draw->palette_byte_count = e->palette_byte_count;
+                draw->texture_is_backbuffer = e->is_backbuffer;
+                draw->texture_is_front_buffer = e->is_front_buffer;
+                return;
+            }
+        }
         if (!recomp_d3d8_resource_describe(resource, &draw->texture)) {
             const uint32_t common = *recomp_memory_u32(resource), type = common & 0x70000u;
             const uint32_t format = type == 0x40000u || type == 0x50000u ?
@@ -242,6 +335,63 @@ static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDr
             recomp_stop(2, "d3d8:draw-texture-description:stage=%u:resource=%08x:common=%08x:format=%08x:fvf=%x:ret=%08x",
                 stage, resource, common, format, draw->fvf, *recomp_memory_u32(recomp_runtime.registers.esp));
         }
+        if (draw->texture.depth)
+            recomp_stop(2, "d3d8:draw-texture-description:depth:stage=%u:resource=%08x:fvf=%x:ret=%08x",
+                stage, resource, draw->fvf, *recomp_memory_u32(recomp_runtime.registers.esp));
+        const RecompD3dTextureDesc *desc = &draw->texture;
+        if (desc->volume_depth != 0u && stage != 0u)
+            recomp_stop(2, "d3d8:volume-texture-stage:%u", stage);
+        uint64_t bytes = recomp_d3d_texture_compressed_mip_span(desc);
+        if (bytes == 0u) bytes = desc->linear ? (uint64_t)desc->pitch * desc->height :
+            (uint64_t)desc->width * desc->height * (desc->volume_depth ? desc->volume_depth : 1u) *
+                desc->bits_per_pixel / 8u;
+        if (bytes == 0u || bytes > RECOMP_XBOX_RAM_SIZE)
+            recomp_stop(2, "d3d8:draw-texture-span");
+        uint32_t address;
+        if (!recomp_d3d_texture_resolve_cpu_address(desc->data, &address))
+            recomp_stop(2, "d3d8:draw-texture-address");
+        draw->texture_bytes = recomp_memory(address, (size_t)bytes);
+        draw->texture_byte_count = (uint32_t)bytes;
+        draw->has_texture = true;
+        draw->address_u = *recomp_memory_u32(STAGES + stage * 128u);
+        draw->address_v = *recomp_memory_u32(STAGES + stage * 128u + 4u);
+        draw->address_w = *recomp_memory_u32(STAGES + stage * 128u + 8u);
+        uint32_t pal_res = 0u, pal_data = 0u;
+        draw->palette_bytes = NULL;
+        draw->palette_byte_count = 0u;
+        draw->texture_is_backbuffer = false;
+        draw->texture_is_front_buffer = false;
+        if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8) {
+            pal_res = *recomp_memory_u32(device + 0xb78u + stage * 4u);
+            if (pal_res == 0u) recomp_stop(2, "d3d8:draw-missing-palette");
+            pal_data = *recomp_memory_u32(pal_res + 4u);
+            if (!recomp_d3d_texture_resolve_cpu_address(pal_data, &address))
+                recomp_stop(2, "d3d8:draw-palette-address");
+            draw->palette_bytes = recomp_memory(address, 1024u);
+            draw->palette_byte_count = 1024u;
+        }
+        for (uint32_t slot = 0u; slot < 2u; ++slot) {
+            const uint32_t header = device + 0x1604u + slot * 24u;
+            if ((*recomp_memory_u32(header + 4u) & 0x7fffffffu) == (desc->data & 0x7fffffffu)) {
+                draw->texture_is_backbuffer = true;
+                draw->texture_is_front_buffer = slot == 1u;
+            }
+        }
+        e->valid = true;
+        e->resource = resource;
+        memcpy(e->raw_hdr, hdr, 20u);
+        e->palette_res = pal_res;
+        e->palette_data = pal_data;
+        e->backbuf_data0 = bb0;
+        e->backbuf_data1 = bb1;
+        e->desc = draw->texture;
+        e->texture_bytes = draw->texture_bytes;
+        e->texture_byte_count = draw->texture_byte_count;
+        e->palette_bytes = draw->palette_bytes;
+        e->palette_byte_count = draw->palette_byte_count;
+        e->is_backbuffer = draw->texture_is_backbuffer;
+        e->is_front_buffer = draw->texture_is_front_buffer;
+        return;
     }
     if (draw->texture.depth)
         recomp_stop(2, "d3d8:draw-texture-description:depth:stage=%u:resource=%08x:fvf=%x:ret=%08x",
@@ -1487,6 +1637,32 @@ static float model_composite[16];
    program's inputs to match. Other types stop with the declaration shown. */
 static uint32_t declaration_layout(uint32_t object, bool program)
 {
+    struct DeclCacheEntry {
+        bool valid;
+        bool program;
+        uint32_t object;
+        uint8_t raw[256];
+        uint32_t fvf;
+        uint32_t remap[16];
+        bool gather_active;
+        uint32_t gather_count;
+        struct { uint32_t stream, offset, size; } gather_part[8];
+    };
+    static struct DeclCacheEntry s_decl_cache[4];
+    static uint32_t s_decl_rr = 0u;
+    const void *raw_ptr = recomp_memory(object + 0x14u, 256u);
+    for (uint32_t c = 0u; c < 4u; ++c) {
+        if (s_decl_cache[c].valid && s_decl_cache[c].object == object &&
+            s_decl_cache[c].program == program &&
+            memcmp(s_decl_cache[c].raw, raw_ptr, 256u) == 0) {
+            memcpy(program_remap, s_decl_cache[c].remap, sizeof program_remap);
+            gather.active = s_decl_cache[c].gather_active;
+            gather.count = s_decl_cache[c].gather_count;
+            memcpy(gather.part, s_decl_cache[c].gather_part, gather.count * sizeof gather.part[0]);
+            return s_decl_cache[c].fvf;
+        }
+    }
+
     uint32_t type[16], stream[16], offset[16];
     for (uint32_t r = 0u; r < 16u; ++r) {
         stream[r] = *recomp_memory_u32(object + 0x14u + r * 16u);
@@ -1545,6 +1721,19 @@ static uint32_t declaration_layout(uint32_t object, bool program)
         at += slots[i].size;
     }
     gather.active = !packed;
+    {
+        struct DeclCacheEntry *e = &s_decl_cache[s_decl_rr & 3u];
+        s_decl_rr = (s_decl_rr + 1u) & 3u;
+        e->valid = true;
+        e->program = program;
+        e->object = object;
+        memcpy(e->raw, raw_ptr, 256u);
+        e->fvf = fvf;
+        memcpy(e->remap, program_remap, sizeof program_remap);
+        e->gather_active = gather.active;
+        e->gather_count = gather.count;
+        memcpy(e->gather_part, gather.part, gather.count * sizeof gather.part[0]);
+    }
     return fvf;
 }
 
@@ -1681,48 +1870,64 @@ static bool bind_stage_texture(uint32_t device, uint32_t i, const uint32_t *stat
     const RecompD3dVertexLayout *layout, RecompD3dPresenterDrawCommand *draw)
 {
     RecompD3dPixelProgram *program = &draw->pixel_program;
-    RecompD3dPresenterDrawCommand texture;
-    texture.has_texture = false;
-    texture.texture_is_backbuffer = false;
-    texture.fvf = draw->fvf;
-    memset(&texture.texture, 0, sizeof texture.texture);
-    attach_texture(device, i, &texture);
-    if (!texture.has_texture) return false;
-    if (texture.texture_is_backbuffer || texture.texture.volume_depth != 0u)
+    RecompD3dPresenterDrawCommand texture_storage;
+    const RecompD3dPresenterDrawCommand *tex_src;
+    if (i == 0u) {
+        tex_src = draw;
+    } else {
+        texture_storage.has_texture = false;
+        texture_storage.texture_is_backbuffer = false;
+        texture_storage.fvf = draw->fvf;
+        memset(&texture_storage.texture, 0, sizeof texture_storage.texture);
+        attach_texture(device, i, &texture_storage);
+        tex_src = &texture_storage;
+    }
+    if (!tex_src->has_texture) return false;
+    if (tex_src->texture_is_backbuffer || tex_src->texture.volume_depth != 0u)
         recomp_stop(2, "d3d8:general-texture-kind:stage=%u", i);
     /* A set the vertices lack reads NV2A's default attribute (0, 0, 0, 1):
        the general vertex shader passes zero, so the stage samples texel 0,0. */
-    (void)layout;
+    (void)layout; (void)texcoord;
     struct RecompD3dStageTexture *bound = &draw->stage_textures[i];
     /* SC2 reads its main depth buffer through a colour alias (format 0x41,
        before the match, into an 8x8 target). shortcut: the host has no colour
        copy of its depth, so the stage samples white, the far plane. */
-    if (texture.texture.data == recomp_d3d8_main_depth_data()) {
+    static uint32_t s_cached_depth_header0 = 0xffffffffu;
+    static uint32_t s_cached_depth_header1 = 0xffffffffu;
+    static uint32_t s_cached_depth_data = 0u;
+    const uint32_t cur_depth_header0 = *recomp_memory_u32(device + 0x164cu);
+    const uint32_t cur_depth_header1 = *recomp_memory_u32(device + 0x1650u);
+    if (cur_depth_header0 != s_cached_depth_header0 || cur_depth_header1 != s_cached_depth_header1) {
+        s_cached_depth_header0 = cur_depth_header0;
+        s_cached_depth_header1 = cur_depth_header1;
+        s_cached_depth_data = recomp_d3d8_main_depth_data();
+    }
+    if (tex_src->texture.data == s_cached_depth_data) {
         static bool noted;
         if (!noted) {
             noted = true;
             fprintf(stderr, "recomp d3d8: stage %u samples the depth buffer (format 0x%02x); white stands in\n",
-                i, texture.texture.format_byte);
+                i, tex_src->texture.format_byte);
         }
         bound->white = true;
         return true;
     }
-    bound->desc = texture.texture;
-    bound->bytes = texture.texture_bytes;
-    bound->byte_count = texture.texture_byte_count;
-    bound->palette = texture.palette_bytes;
-    bound->palette_byte_count = texture.palette_byte_count;
-    bound->address_u = texture.address_u;
-    bound->address_v = texture.address_v;
+    bound->desc = tex_src->texture;
+    bound->bytes = tex_src->texture_bytes;
+    bound->byte_count = tex_src->texture_byte_count;
+    bound->palette = tex_src->palette_bytes;
+    bound->palette_byte_count = tex_src->palette_byte_count;
+    bound->address_u = tex_src->address_u;
+    bound->address_v = tex_src->address_v;
     /* shortcut: MAG/MINFILTER POINT sample linearly; only the mip filter is kept. */
     bound->point_mip_filter = state[5] == 1u;
     bound->mip_lod_bias = lod_bias(state[6]);
     float *scale = program->constants[RECOMP_D3D_PIXEL_CONSTANT_STAGE_SCALE + i];
-    scale[0] = texture.texture.linear && texture.texture.width ? 1.0f / texture.texture.width : 1.0f;
-    scale[1] = texture.texture.linear && texture.texture.height ? 1.0f / texture.texture.height : 1.0f;
-    scale[2] = texture.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ? 1.0f : 0.0f;
+    scale[0] = tex_src->texture.linear && tex_src->texture.width ? 1.0f / tex_src->texture.width : 1.0f;
+    scale[1] = tex_src->texture.linear && tex_src->texture.height ? 1.0f / tex_src->texture.height : 1.0f;
+    scale[2] = tex_src->texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ? 1.0f : 0.0f;
     /* X8R8G8B8 (swizzled 0x07, linear 0x1e) and X1R5G5B5 (0x03, 0x1c) have no alpha. */
-    const uint32_t f = texture.texture.format_byte;
+    const uint32_t f = tex_src->texture.format_byte;
     scale[3] = f == 0x07u || f == 0x1eu || f == 0x03u || f == 0x1cu ? 1.0f : 0.0f;
     return true;
 }
@@ -1745,28 +1950,56 @@ static void general_combiners(uint32_t device, const RecompD3dVertexLayout *layo
     RecompD3dPixelProgram *program = &draw->pixel_program;
     RecompD3dCombiners *c = &program->combiners;
     program->kind = RECOMP_D3D_PIXEL_COMBINERS;
-    memset(c, 0, sizeof *c);
-    uint32_t value = 0u;
+    memset(program->stages, 0, sizeof program->stages);
+
+    static bool s_comb_cache_valid = false;
+    static uint32_t s_comb_cached_gen = 0u;
+    static RecompD3dCombiners s_comb_cached_c;
+    static float s_comb_cached_f0[8][4];
+    static float s_comb_cached_f1[8][4];
+    static float s_comb_cached_final[2][4];
+
+    if (s_comb_cache_valid && model->simple_update_count == s_comb_cached_gen) {
+        *c = s_comb_cached_c;
+        const uint32_t stage_count = c->control & 0xffu;
+        const uint32_t active_stages = stage_count <= 8u ? stage_count : 8u;
+        for (uint32_t i = 0u; i < active_stages; ++i) {
+            memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_FACTOR0 + i], s_comb_cached_f0[i], 16u);
+            memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_FACTOR1 + i], s_comb_cached_f1[i], 16u);
+        }
+        memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_FINAL0], s_comb_cached_final[0], 16u);
+        memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_FINAL1], s_comb_cached_final[1], 16u);
+    } else {
+        memset(c, 0, sizeof *c);
+        uint32_t value = 0u;
 #define METHOD(m) (recomp_d3d_get_simple_render_state(model, 0x40000u | (m), &value) ? value : 0u)
-    c->control = METHOD(0x1e60u);
-    const uint32_t stage_count = c->control & 0xffu;
-    const uint32_t active_stages = stage_count <= 8u ? stage_count : 8u;
-    for (uint32_t i = 0u; i < active_stages; ++i) {
-        c->color_input[i] = METHOD(0xac0u + i * 4u);
-        c->color_output[i] = METHOD(0x1e40u + i * 4u);
-        c->alpha_input[i] = METHOD(0x260u + i * 4u);
-        c->alpha_output[i] = METHOD(0xaa0u + i * 4u);
-        color_constant(METHOD(0xa60u + i * 4u), program->constants[RECOMP_D3D_PIXEL_CONSTANT_FACTOR0 + i]);
-        color_constant(METHOD(0xa80u + i * 4u), program->constants[RECOMP_D3D_PIXEL_CONSTANT_FACTOR1 + i]);
-    }
-    c->final0 = METHOD(0x288u);
-    c->final1 = METHOD(0x28cu);
-    color_constant(METHOD(0x1e20u), program->constants[RECOMP_D3D_PIXEL_CONSTANT_FINAL0]);
-    color_constant(METHOD(0x1e24u), program->constants[RECOMP_D3D_PIXEL_CONSTANT_FINAL1]);
-    c->compare_mode = METHOD(0x17f8u);
-    c->dot_mapping = METHOD(0x1e74u);
-    c->input_texture = METHOD(0x1e78u);
+        c->control = METHOD(0x1e60u);
+        const uint32_t stage_count = c->control & 0xffu;
+        const uint32_t active_stages = stage_count <= 8u ? stage_count : 8u;
+        for (uint32_t i = 0u; i < active_stages; ++i) {
+            c->color_input[i] = METHOD(0xac0u + i * 4u);
+            c->color_output[i] = METHOD(0x1e40u + i * 4u);
+            c->alpha_input[i] = METHOD(0x260u + i * 4u);
+            c->alpha_output[i] = METHOD(0xaa0u + i * 4u);
+            color_constant(METHOD(0xa60u + i * 4u), s_comb_cached_f0[i]);
+            color_constant(METHOD(0xa80u + i * 4u), s_comb_cached_f1[i]);
+            memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_FACTOR0 + i], s_comb_cached_f0[i], 16u);
+            memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_FACTOR1 + i], s_comb_cached_f1[i], 16u);
+        }
+        c->final0 = METHOD(0x288u);
+        c->final1 = METHOD(0x28cu);
+        color_constant(METHOD(0x1e20u), s_comb_cached_final[0]);
+        color_constant(METHOD(0x1e24u), s_comb_cached_final[1]);
+        memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_FINAL0], s_comb_cached_final[0], 16u);
+        memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_FINAL1], s_comb_cached_final[1], 16u);
+        c->compare_mode = METHOD(0x17f8u);
+        c->dot_mapping = METHOD(0x1e74u);
+        c->input_texture = METHOD(0x1e78u);
 #undef METHOD
+        s_comb_cached_c = *c;
+        s_comb_cached_gen = model->simple_update_count;
+        s_comb_cache_valid = true;
+    }
     c->texture_modes = *recomp_memory_u32(0x0015e5b0u);
     /* Fog is off on these draws (submit_draw stops otherwise): factor one. */
     color_constant(*recomp_memory_u32(0x0015e5b8u), program->constants[RECOMP_D3D_PIXEL_CONSTANT_FOG]);
@@ -1781,10 +2014,6 @@ static void general_combiners(uint32_t device, const RecompD3dVertexLayout *layo
         out->alpha_kill = state[11] == 4u;
         if (mode == 1u) out->sampled = bind_stage_texture(device, i, state, out->texcoord, layout, draw);
     }
-    const char *reason;
-    if (!recomp_d3d_pixel_program_supported(program, &reason))
-        recomp_stop(2, "d3d8:general-combiners:%s:count=%u:modes=%05x:compare=%x", reason,
-            c->control & 0xffu, c->texture_modes, c->compare_mode);
 }
 
 enum { RS_FOG_ENABLE = 0x0015e500u, RS_LIGHTING = 0x0015e528u, RS_SPECULAR_ENABLE = 0x0015e52cu };
@@ -1796,14 +2025,20 @@ enum { RS_FOG_ENABLE = 0x0015e500u, RS_LIGHTING = 0x0015e528u, RS_SPECULAR_ENABL
 static void general_fog(uint32_t device, const RecompD3dVertexLayout *layout,
     RecompD3dPresenterDrawCommand *draw, bool program_draw)
 {
-    memset(draw->general_fog, 0, sizeof draw->general_fog);
     if (*recomp_memory_u32(RS_FOG_ENABLE) == 0u) return;
     const uint32_t mode = *recomp_memory_u32(0x0015e504u);
-    if (mode > 3u) recomp_stop(2, "d3d8:general-fog-mode:%u", mode);
-    float params[3];
-    recomp_guest_load(params, 0x0015e508u, sizeof params);
-    for (uint32_t i = 0u; i < 3u; ++i)
-        if (!isfinite(params[i])) recomp_stop(2, "d3d8:general-fog-params");
+    const float *params = (const float *)recomp_memory(0x0015e508u, 3u * sizeof(float));
+    static bool s_fog_pvalid = false;
+    static uint32_t s_fog_pmode = 0u;
+    static float s_fog_pparams[3];
+    if (!s_fog_pvalid || mode != s_fog_pmode || memcmp(params, s_fog_pparams, 12u) != 0) {
+        if (mode > 3u) recomp_stop(2, "d3d8:general-fog-mode:%u", mode);
+        for (uint32_t i = 0u; i < 3u; ++i)
+            if (!isfinite(params[i])) recomp_stop(2, "d3d8:general-fog-params");
+        s_fog_pmode = mode;
+        memcpy(s_fog_pparams, params, 12u);
+        s_fog_pvalid = true;
+    }
     /* shortcut: pretransformed vertices carry fog in specular alpha, which is
        not an input yet, so they draw unfogged. */
     if (layout->pretransformed && !program_draw) return;
@@ -1814,19 +2049,28 @@ static void general_fog(uint32_t device, const RecompD3dVertexLayout *layout,
     draw->general_fog[2][0] = params[2];
     draw->general_fog[2][1] = *recomp_memory_u32(0x0015e514u) != 0u ? 1.0f : 0.0f; /* RANGEFOGENABLE */
     if (!program_draw) {
-        float eye[16];
+        const float *eye_ptr;
         if (model_view_active) {
-            memcpy(eye, model_view, sizeof eye);
+            eye_ptr = model_view;
         } else {
-            float world[16], view[16];
-            recomp_guest_load(world, device + 0x9c0u, sizeof world);
-            recomp_guest_load(view, device + 0x840u, sizeof view);
-            multiply(world, view, eye, "fog-eye");
+            const float *world = (const float *)recomp_memory(device + 0x9c0u, 64u);
+            const float *view = (const float *)recomp_memory(device + 0x840u, 64u);
+            static bool s_fog_eye_valid = false;
+            static float s_fog_world[16];
+            static float s_fog_view[16];
+            static float s_fog_eye[16];
+            if (!s_fog_eye_valid || memcmp(world, s_fog_world, 64u) != 0 || memcmp(view, s_fog_view, 64u) != 0) {
+                multiply(world, view, s_fog_eye, "fog-eye");
+                memcpy(s_fog_world, world, 64u);
+                memcpy(s_fog_view, view, 64u);
+                s_fog_eye_valid = true;
+            }
+            eye_ptr = s_fog_eye;
         }
         for (uint32_t r = 0u; r < 4u; ++r) {
-            draw->general_fog[1][r] = eye[r * 4u + 2u];
-            draw->general_fog[3][r] = eye[r * 4u];
-            draw->general_fog[4][r] = eye[r * 4u + 1u];
+            draw->general_fog[1][r] = eye_ptr[r * 4u + 2u];
+            draw->general_fog[3][r] = eye_ptr[r * 4u];
+            draw->general_fog[4][r] = eye_ptr[r * 4u + 1u];
         }
     }
 }
@@ -1865,95 +2109,184 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
         *recomp_memory_u32(RS_LIGHTING) == 0u) return;
     if (layout->blend_weight_count != 0u) recomp_stop(2, "d3d8:general-lighting-blend:fvf=%x", draw->fvf);
     if (*recomp_memory_u32(0x0015e5c4u) != 0u) recomp_stop(2, "d3d8:general-lighting-two-sided");
-    RecompD3dDirectionalLighting result = {0};
-    float material[17];
-    recomp_guest_load(material, device + 0xae0u, sizeof material);
+    RecompD3dDirectionalLighting *result = &draw->directional;
+    result->stage_mode = false;
+    memset(result->ambient_emissive, 0, sizeof result->ambient_emissive);
+    memset(result->stage, 0, sizeof result->stage);
+    const float *material = (const float *)recomp_memory(device + 0xae0u, 17u * sizeof(float));
     const bool specular = *recomp_memory_u32(RS_SPECULAR_ENABLE) != 0u;
     const bool color_vertex = *recomp_memory_u32(0x0015e534u) != 0u;
     const bool diffuse = layout->diffuse_offset != RECOMP_D3D_FVF_ABSENT;
-    /* D3DMCS: 0 material, 1 vertex diffuse, 2 vertex specular (not an input
-       yet); a source the vertex lacks reads the material. */
-    for (uint32_t i = 0u; i < 4u; ++i) {
-        const uint32_t source = color_vertex ? *recomp_memory_u32(0x0015e548u + i * 4u) : 0u;
-        if (source > 2u || source == 2u) recomp_stop(2, "d3d8:general-lighting-source:%u:%u", i, source);
-        if (i == 0u) {
-            if (specular && source != 0u) recomp_stop(2, "d3d8:general-lighting-specular-source:%u", source);
-            continue;
-        }
-        result.sources[i - 1u] = source == 1u && diffuse ? 1.0f : 0.0f;
+    const uint32_t global_amb = *recomp_memory_u32(0x0015e55cu);
+    uint32_t raw_sources[4] = {0u, 0u, 0u, 0u};
+    if (color_vertex) {
+        const uint32_t *src_ptr = (const uint32_t *)recomp_memory(0x0015e548u, 16u);
+        memcpy(raw_sources, src_ptr, 16u);
     }
-    for (uint32_t i = 0u; i < 17u; ++i)
-        if (!isfinite(material[i])) recomp_stop(2, "d3d8:general-lighting-material:%u", i);
-    memcpy(result.material_diffuse, material, sizeof result.material_diffuse);
-    memcpy(result.material_ambient, material + 4u, 3u * sizeof(float));
-    memcpy(result.material_emissive, material + 12u, 3u * sizeof(float));
-    color_constant(*recomp_memory_u32(0x0015e55cu), result.global_ambient);
-    const uint32_t array = *recomp_memory_u32(device + 0x38cu), capacity = *recomp_memory_u32(device + 0x390u);
-    for (uint32_t slot = 0u; slot < 8u; ++slot) {
-        const uint32_t address = *recomp_memory_u32(device + 0x394u + slot * 4u);
-        if (address == 0u) continue;
-        if (address < array || (address - array) / sizeof(RecompD3dLightRecord) >= capacity)
-            recomp_stop(2, "d3d8:general-lighting-slot");
-        RecompD3dLightRecord record;
-        recomp_guest_load(&record, address, sizeof record);
-        const RecompD3dLightDesc *light = &record.desc;
-        if (light->type != 1u && light->type != 3u) recomp_stop(2, "d3d8:general-lighting-type:%u", light->type);
-        const bool point = light->type == 1u;
-        const uint32_t i = result.count++;
-        for (uint32_t c = 0u; c < 3u; ++c) {
-            result.colors[i][c] = light->diffuse[c];
-            result.ambient[i][c] = light->ambient[c];
-            result.specular[i][c] = specular ? light->specular[c] * material[8u + c] : 0.0f;
-            result.positions[i][c] = point ? light->position[c] : 0.0f;
-            result.directions[i][c] = point ? 0.0f : record.normalized_direction[c];
-            result.attenuation[i][c] = point ? light->attenuation[c] : 0.0f;
+    const uint32_t *slot_ptrs = (const uint32_t *)recomp_memory(device + 0x394u, 32u);
+
+    static bool s_lcache_valid = false;
+    static uint32_t s_lcache_dev = 0u;
+    static bool s_lcache_spec = false;
+    static bool s_lcache_diff = false;
+    static uint32_t s_lcache_gamb = 0u;
+    static uint32_t s_lcache_srcs[4];
+    static float s_lcache_mat[17];
+    static uint32_t s_lcache_ptrs[8];
+    static RecompD3dLightRecord s_lcache_recs[8];
+    static RecompD3dDirectionalLighting s_lcache_res;
+
+    bool cache_hit = s_lcache_valid &&
+        s_lcache_dev == device &&
+        s_lcache_spec == specular &&
+        s_lcache_diff == diffuse &&
+        s_lcache_gamb == global_amb &&
+        memcmp(s_lcache_srcs, raw_sources, 16u) == 0 &&
+        memcmp(s_lcache_mat, material, 17u * sizeof(float)) == 0 &&
+        memcmp(s_lcache_ptrs, slot_ptrs, 32u) == 0;
+    if (cache_hit) {
+        for (uint32_t slot = 0u; slot < 8u; ++slot) {
+            const uint32_t address = slot_ptrs[slot];
+            if (address == 0u) continue;
+            const RecompD3dLightRecord *record = (const RecompD3dLightRecord *)recomp_memory(address, sizeof *record);
+            if (memcmp(record, &s_lcache_recs[slot], sizeof *record) != 0) {
+                cache_hit = false;
+                break;
+            }
         }
-        result.positions[i][3] = point;
-        result.attenuation[i][3] = point ? light->range : 0.0f;
-        for (uint32_t c = 0u; c < 3u; ++c)
-            if (!isfinite(result.colors[i][c]) || !isfinite(result.ambient[i][c]) ||
-                !isfinite(result.specular[i][c]) || !isfinite(result.directions[i][c]))
-                recomp_stop(2, "d3d8:general-lighting-light:%u", slot);
     }
-    float view[16];
-    recomp_guest_load(view, device + 0x840u, sizeof view);
+
+    if (cache_hit) {
+        result->count = s_lcache_res.count;
+        const uint32_t cnt = result->count;
+        if (cnt != 0u) {
+            memcpy(result->colors, s_lcache_res.colors, cnt * 16u);
+            memcpy(result->ambient, s_lcache_res.ambient, cnt * 16u);
+            memcpy(result->specular, s_lcache_res.specular, cnt * 16u);
+            memcpy(result->positions, s_lcache_res.positions, cnt * 16u);
+            memcpy(result->directions, s_lcache_res.directions, cnt * 16u);
+            memcpy(result->attenuation, s_lcache_res.attenuation, cnt * 16u);
+        }
+        memcpy(result->sources, s_lcache_res.sources, 16u);
+        memcpy(result->material_diffuse, s_lcache_res.material_diffuse, 16u);
+        memcpy(result->material_ambient, s_lcache_res.material_ambient, 16u);
+        memcpy(result->material_emissive, s_lcache_res.material_emissive, 16u);
+        memcpy(result->global_ambient, s_lcache_res.global_ambient, 16u);
+    } else {
+        result->count = 0u;
+        memset(result->sources, 0, sizeof result->sources);
+        result->material_ambient[3] = 0.0f;
+        result->material_emissive[3] = 0.0f;
+        /* D3DMCS: 0 material, 1 vertex diffuse, 2 vertex specular (not an input
+           yet); a source the vertex lacks reads the material. */
+        for (uint32_t i = 0u; i < 4u; ++i) {
+            const uint32_t source = raw_sources[i];
+            if (source > 2u || source == 2u) recomp_stop(2, "d3d8:general-lighting-source:%u:%u", i, source);
+            if (i == 0u) {
+                if (specular && source != 0u) recomp_stop(2, "d3d8:general-lighting-specular-source:%u", source);
+                continue;
+            }
+            result->sources[i - 1u] = source == 1u && diffuse ? 1.0f : 0.0f;
+        }
+        for (uint32_t i = 0u; i < 17u; ++i)
+            if (!isfinite(material[i])) recomp_stop(2, "d3d8:general-lighting-material:%u", i);
+        memcpy(result->material_diffuse, material, sizeof result->material_diffuse);
+        memcpy(result->material_ambient, material + 4u, 3u * sizeof(float));
+        memcpy(result->material_emissive, material + 12u, 3u * sizeof(float));
+        color_constant(global_amb, result->global_ambient);
+        const uint32_t array = *recomp_memory_u32(device + 0x38cu), capacity = *recomp_memory_u32(device + 0x390u);
+        for (uint32_t slot = 0u; slot < 8u; ++slot) {
+            const uint32_t address = slot_ptrs[slot];
+            if (address == 0u) continue;
+            if (address < array || (address - array) / sizeof(RecompD3dLightRecord) >= capacity)
+                recomp_stop(2, "d3d8:general-lighting-slot");
+            const RecompD3dLightRecord *record = (const RecompD3dLightRecord *)recomp_memory(address, sizeof *record);
+            s_lcache_recs[slot] = *record;
+            const RecompD3dLightDesc *light = &record->desc;
+            if (light->type != 1u && light->type != 3u) recomp_stop(2, "d3d8:general-lighting-type:%u", light->type);
+            const bool point = light->type == 1u;
+            const uint32_t i = result->count++;
+            for (uint32_t c = 0u; c < 3u; ++c) {
+                result->colors[i][c] = light->diffuse[c];
+                result->ambient[i][c] = light->ambient[c];
+                result->specular[i][c] = specular ? light->specular[c] * material[8u + c] : 0.0f;
+                result->positions[i][c] = point ? light->position[c] : 0.0f;
+                result->directions[i][c] = point ? 0.0f : record->normalized_direction[c];
+                result->attenuation[i][c] = point ? light->attenuation[c] : 0.0f;
+            }
+            result->colors[i][3] = 0.0f;
+            result->ambient[i][3] = 0.0f;
+            result->specular[i][3] = 0.0f;
+            result->directions[i][3] = 0.0f;
+            result->positions[i][3] = point;
+            result->attenuation[i][3] = point ? light->range : 0.0f;
+            for (uint32_t c = 0u; c < 3u; ++c)
+                if (!isfinite(result->colors[i][c]) || !isfinite(result->ambient[i][c]) ||
+                    !isfinite(result->specular[i][c]) || !isfinite(result->directions[i][c]))
+                    recomp_stop(2, "d3d8:general-lighting-light:%u", slot);
+        }
+        s_lcache_dev = device;
+        s_lcache_spec = specular;
+        s_lcache_diff = diffuse;
+        s_lcache_gamb = global_amb;
+        memcpy(s_lcache_srcs, raw_sources, 16u);
+        memcpy(s_lcache_mat, material, 17u * sizeof(float));
+        memcpy(s_lcache_ptrs, slot_ptrs, 32u);
+        s_lcache_res = *result;
+        s_lcache_valid = true;
+    }
+    const float *view = (const float *)recomp_memory(device + 0x840u, 64u);
     static float s_light_cached_view[16];
     static float s_light_cached_inv[16];
     static bool s_light_inv_valid = false;
     const bool need_inv = model_view_active || (specular && *recomp_memory_u32(0x0015e530u) != 0u);
-    float inverse[16];
+    const float *inverse_ptr = s_light_cached_inv;
     if (need_inv) {
-        if (s_light_inv_valid && memcmp(view, s_light_cached_view, sizeof view) == 0) {
-            memcpy(inverse, s_light_cached_inv, sizeof inverse);
-        } else {
-            if (!affine_inverse(view, inverse)) recomp_stop(2, "d3d8:general-lighting-view");
-            memcpy(s_light_cached_view, view, sizeof view);
-            memcpy(s_light_cached_inv, inverse, sizeof inverse);
+        if (!s_light_inv_valid || memcmp(view, s_light_cached_view, 64u) != 0) {
+            if (!affine_inverse(view, s_light_cached_inv)) recomp_stop(2, "d3d8:general-lighting-view");
+            memcpy(s_light_cached_view, view, 64u);
             s_light_inv_valid = true;
         }
     }
     if (model_view_active) {
-        multiply(model_view, inverse, result.world_transforms[0], "lighting-world");
+        multiply(model_view, inverse_ptr, result->world_transforms[0], "lighting-world");
     } else {
-        recomp_guest_load(result.world_transforms[0], device + 0x9c0u, 64u);
+        memcpy(result->world_transforms[0], recomp_memory(device + 0x9c0u, 64u), 64u);
     }
-    if (!recomp_d3d_normal_transform(result.world_transforms[0], result.normal_transforms[0]))
-        memset(result.normal_transforms[0], 0, sizeof result.normal_transforms[0]);
+    {
+        static bool s_norm_valid = false;
+        static float s_norm_world[16];
+        static float s_norm_out[16];
+        if (!s_norm_valid || memcmp(result->world_transforms[0], s_norm_world, 48u) != 0) {
+            if (!recomp_d3d_normal_transform(result->world_transforms[0], s_norm_out))
+                memset(s_norm_out, 0, sizeof s_norm_out);
+            memcpy(s_norm_world, result->world_transforms[0], 48u);
+            s_norm_valid = true;
+        }
+        memcpy(result->normal_transforms[0], s_norm_out, sizeof s_norm_out);
+    }
     if (specular && *recomp_memory_u32(0x0015e530u) != 0u) {
         /* LOCALVIEWER: the eye's world position, the inverse view's origin. */
-        memcpy(result.view, inverse + 12u, 3u * sizeof(float));
-        result.sources[3] = 1.0f;
-        result.view[3] = material[16] > 0.0f ? material[16] : 1e-6f;
+        memcpy(result->view, inverse_ptr + 12u, 3u * sizeof(float));
+        result->sources[3] = 1.0f;
+        result->view[3] = material[16] > 0.0f ? material[16] : 1e-6f;
     } else if (specular) {
-        const float length = sqrtf(view[2] * view[2] + view[6] * view[6] + view[10] * view[10]);
-        if (!isfinite(length) || length <= 0.0f) recomp_stop(2, "d3d8:general-lighting-view-direction");
-        for (uint32_t c = 0u; c < 3u; ++c) result.view[c] = -view[2u + 4u * c] / length;
+        static bool s_ldir_valid = false;
+        static float s_ldir_view[16];
+        static float s_ldir_vec[3];
+        if (!s_ldir_valid || memcmp(view, s_ldir_view, 64u) != 0) {
+            const float length = sqrtf(view[2] * view[2] + view[6] * view[6] + view[10] * view[10]);
+            if (!isfinite(length) || !isfinite(1.0f / length) || length <= 0.0f) recomp_stop(2, "d3d8:general-lighting-view-direction");
+            for (uint32_t c = 0u; c < 3u; ++c) s_ldir_vec[c] = -view[2u + 4u * c] / length;
+            memcpy(s_ldir_view, view, 64u);
+            s_ldir_valid = true;
+        }
+        memcpy(result->view, s_ldir_vec, 12u);
         /* shortcut: zero power uses epsilon, as attach_lighting does. */
-        result.view[3] = material[16] > 0.0f ? material[16] : 1e-6f;
+        result->view[3] = material[16] > 0.0f ? material[16] : 1e-6f;
     }
-    result.normalize = *recomp_memory_u32(0x0015e5c8u) != 0u;
-    result.enabled = true;
-    draw->directional = result;
+    result->normalize = *recomp_memory_u32(0x0015e5c8u) != 0u;
+    result->enabled = true;
 }
 
 /* SC2's fixed-function draws go to the general pixel program: the SDK's
@@ -1996,13 +2329,6 @@ static void general_fixed_stages(uint32_t device, const RecompD3dVertexLayout *l
         out->alpha_kill = state[11] == 4u;
         out->sampled = bind_stage_texture(device, i, state, out->texcoord, layout, draw);
         program->stage_count = i + 1u;
-    }
-    const char *reason;
-    if (!recomp_d3d_pixel_program_supported(program, &reason)) {
-        const uint32_t *first = stage_base;
-        recomp_stop(2, "d3d8:general-stages:%s:%u:%u,%u,%u/%u,%u,%u:result=%u:tci=%08x:ttf=%u", reason,
-            program->stage_count, first[12], first[14], first[15], first[16], first[18], first[19],
-            first[20], first[28], first[21]);
     }
 }
 
@@ -2057,6 +2383,175 @@ void Switch_TakeDrawProf(uint64_t *idx, uint64_t *gather_t, uint64_t *mat, uint6
     s_prof_draws = 0;
 }
 
+static uint16_t s_sequential_indices[65536];
+static uint16_t s_shifted_indices[65536];
+static bool s_indices_inited = false;
+
+bool Switch_D3d8IsStaticSequentialIndices(const void *ptr)
+{
+    return ptr == s_sequential_indices;
+}
+
+static float s_cached_view[16];
+static float s_cached_proj[16];
+static float s_cached_vp[16];
+static bool s_vp_valid = false;
+
+static inline const float *get_cached_vp(uint32_t device, const float *view, const float *projection)
+{
+    if (!s_vp_valid ||
+        memcmp(view, s_cached_view, 64u) != 0 ||
+        memcmp(projection, s_cached_proj, 64u) != 0) {
+        multiply(view, projection, s_cached_vp, "view-projection");
+        memcpy(s_cached_view, view, 64u);
+        memcpy(s_cached_proj, projection, 64u);
+        s_vp_valid = true;
+    }
+    return s_cached_vp;
+}
+
+extern bool __real_recomp_d3d_light_set(RecompD3dLightRecord *record, const RecompD3dLightDesc *desc);
+bool __wrap_recomp_d3d_light_set(RecompD3dLightRecord *record, const RecompD3dLightDesc *desc)
+{
+    static bool s_lset_valid[4];
+    static RecompD3dLightDesc s_lset_desc[4];
+    static float s_lset_dir[4][3];
+    static uint32_t s_lset_rr = 0u;
+    if (record != NULL && desc != NULL) {
+        for (uint32_t i = 0u; i < 4u; ++i) {
+            if (s_lset_valid[i] && memcmp(&s_lset_desc[i], desc, sizeof *desc) == 0) {
+                record->desc = *desc;
+                record->flags |= 3u;
+                if (desc->type == 3u) memcpy(record->normalized_direction, s_lset_dir[i], sizeof s_lset_dir[i]);
+                return true;
+            }
+        }
+        const bool ok = __real_recomp_d3d_light_set(record, desc);
+        if (ok) {
+            const uint32_t slot = s_lset_rr & 3u;
+            s_lset_rr = (s_lset_rr + 1u) & 3u;
+            s_lset_valid[slot] = true;
+            s_lset_desc[slot] = *desc;
+            if (desc->type == 3u) memcpy(s_lset_dir[slot], record->normalized_direction, sizeof s_lset_dir[slot]);
+        }
+        return ok;
+    }
+    return __real_recomp_d3d_light_set(record, desc);
+}
+
+extern bool __real_recomp_d3d_set_simple_render_state(RecompD3dRenderStateModel *model, uint32_t encoded_method, uint32_t value);
+bool __wrap_recomp_d3d_set_simple_render_state(RecompD3dRenderStateModel *model, uint32_t encoded_method, uint32_t value)
+{
+    if (model != NULL && encoded_method >= 0x00040000u && encoded_method <= 0x00041ffcu && (encoded_method & 3u) == 0u) {
+        const uint32_t index = (encoded_method & 0x00001ffcu) >> 2u;
+        const uint32_t mask = 1u << (index & 31u);
+        if ((model->simple_present[index >> 5u] & mask) != 0u && model->simple_values[index] == value) {
+            return true;
+        }
+        model->simple_values[index] = value;
+        model->simple_present[index >> 5u] |= mask;
+        ++model->simple_update_count;
+        return true;
+    }
+    return __real_recomp_d3d_set_simple_render_state(model, encoded_method, value);
+}
+
+static inline void get_cached_blend_state(const RecompD3dRenderStateModel *state, RecompD3dBlendState *out)
+{
+    static bool s_blend_valid = false;
+    static uint32_t s_blend_gen = 0u;
+    static RecompD3dBlendState s_cached_blend;
+    if (!s_blend_valid || state->simple_update_count != s_blend_gen) {
+        recomp_d3d_blend_state(state, &s_cached_blend);
+        s_blend_gen = state->simple_update_count;
+        s_blend_valid = true;
+    }
+    *out = s_cached_blend;
+}
+
+static inline void get_cached_depth_state(const RecompD3dRenderStateModel *state, RecompD3dDepthState *out)
+{
+    static bool s_depth_valid = false;
+    static uint32_t s_depth_gen = 0u;
+    static uint32_t s_depth_z = 0u;
+    static uint32_t s_depth_st = 0u;
+    static RecompD3dDepthState s_cached_depth;
+    if (!s_depth_valid || state->simple_update_count != s_depth_gen ||
+        state->z_enable != s_depth_z || state->stencil_enable != s_depth_st) {
+        recomp_d3d_depth_state(state, &s_cached_depth);
+        s_depth_gen = state->simple_update_count;
+        s_depth_z = state->z_enable;
+        s_depth_st = state->stencil_enable;
+        s_depth_valid = true;
+    }
+    *out = s_cached_depth;
+}
+
+static inline bool get_cached_polygon_offset(const RecompD3dRenderStateModel *state, int32_t *bias, float *slope)
+{
+    static bool s_poff_valid = false;
+    static uint32_t s_poff_gen = 0u;
+    static bool s_poff_ok = false;
+    static int32_t s_poff_bias = 0;
+    static float s_poff_slope = 0.0f;
+    if (!s_poff_valid || state->simple_update_count != s_poff_gen) {
+        s_poff_ok = recomp_d3d_polygon_offset(state, &s_poff_bias, &s_poff_slope);
+        s_poff_gen = state->simple_update_count;
+        s_poff_valid = true;
+    }
+    *bias = s_poff_bias;
+    *slope = s_poff_slope;
+    return s_poff_ok;
+}
+
+static inline bool get_cached_fvf_layout(uint32_t fvf, RecompD3dVertexLayout *out)
+{
+    static uint32_t s_fvf_keys[4] = {0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu};
+    static bool s_fvf_ok[4] = {false, false, false, false};
+    static RecompD3dVertexLayout s_fvf_vals[4];
+    const uint32_t slot = (fvf ^ (fvf >> 4)) & 3u;
+    if (s_fvf_keys[slot] == fvf) {
+        if (s_fvf_ok[slot]) *out = s_fvf_vals[slot];
+        return s_fvf_ok[slot];
+    }
+    s_fvf_keys[slot] = fvf;
+    s_fvf_ok[slot] = recomp_d3d_fvf_layout(fvf, &s_fvf_vals[slot]);
+    if (s_fvf_ok[slot]) *out = s_fvf_vals[slot];
+    return s_fvf_ok[slot];
+}
+
+static inline void get_cached_target(uint32_t device, RecompD3dPresenterTarget *out)
+{
+    static bool s_tgt_valid = false;
+    static uint32_t s_tgt_dev = 0u;
+    static uint32_t s_tgt_color = 0u;
+    static uint32_t s_tgt_depth = 0u;
+    static uint32_t s_tgt_c4 = 0u;
+    static uint32_t s_tgt_cc = 0u;
+    static uint32_t s_tgt_d4 = 0u;
+    static uint32_t s_tgt_dc = 0u;
+    static RecompD3dPresenterTarget s_cached_tgt;
+    const uint32_t color = *recomp_memory_u32(device + 0x15e4u);
+    const uint32_t depth = *recomp_memory_u32(device + 0x15e8u);
+    const uint32_t c4 = color ? *recomp_memory_u32(color + 4u) : 0u;
+    const uint32_t cc = color ? *recomp_memory_u32(color + 12u) : 0u;
+    const uint32_t d4 = depth ? *recomp_memory_u32(depth + 4u) : 0u;
+    const uint32_t dc = depth ? *recomp_memory_u32(depth + 12u) : 0u;
+    if (!s_tgt_valid || device != s_tgt_dev || color != s_tgt_color || depth != s_tgt_depth ||
+        c4 != s_tgt_c4 || cc != s_tgt_cc || d4 != s_tgt_d4 || dc != s_tgt_dc) {
+        recomp_d3d8_target(&s_cached_tgt);
+        s_tgt_dev = device;
+        s_tgt_color = color;
+        s_tgt_depth = depth;
+        s_tgt_c4 = c4;
+        s_tgt_cc = cc;
+        s_tgt_d4 = d4;
+        s_tgt_dc = dc;
+        s_tgt_valid = true;
+    }
+    *out = s_cached_tgt;
+}
+
 static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     uint32_t stride, uint32_t index_address)
 {
@@ -2077,17 +2572,34 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     if (!points && !quads && !line_strip && primitive != 2u && (primitive < 5u || primitive > 7u))
         recomp_stop(2, "d3d8:draw-primitive:%u", primitive);
     if (triangles == 0u) return;
-    RecompD3dPresenterCommand command;
-    RecompD3dPresenterDrawCommand *draw = &command.data.draw;
-    memset(&command, 0, offsetof(RecompD3dPresenterCommand, data.draw.program));
+    uint32_t worker_slot = 0u;
+    uint64_t worker_tq0 = 0u;
+    SwitchGatherDrawJob *gather_job_ptr = NULL;
+    RecompD3dPresenterCommand local_command;
+    RecompD3dPresenter *const active_presenter = recomp_d3d8_presenter();
+    RecompD3dPresenterCommand *cmd_ptr = Switch_D3dWorkerBeginDraw(
+        active_presenter, &worker_slot, &worker_tq0, &gather_job_ptr);
+    const bool use_worker_slot = (cmd_ptr != NULL);
+    if (!use_worker_slot) cmd_ptr = &local_command;
+    RecompD3dPresenterDrawCommand *draw = &cmd_ptr->data.draw;
+    memset(cmd_ptr, 0, offsetof(RecompD3dPresenterCommand, data.draw.program));
     draw->program_count = 0u;
     draw->program_alpha_mask = false;
     draw->program_mask_lod_bias = 0.0f;
     draw->directional.enabled = false;
-    memset(&draw->vertex_bytes, 0, sizeof(*draw) - offsetof(RecompD3dPresenterDrawCommand, vertex_bytes));
+    draw->blend_weight_count = 0u;
+    draw->has_transform = false;
+    draw->screen_space_offset[0] = 0.0f;
+    draw->screen_space_offset[1] = 0.0f;
+    memset(&draw->use_texture_factor, 0, offsetof(RecompD3dPresenterDrawCommand, has_alpha_mask) - offsetof(RecompD3dPresenterDrawCommand, use_texture_factor));
+    draw->pixel_program.kind = RECOMP_D3D_PIXEL_NONE;
+    draw->pixel_program.stage_count = 0u;
+    draw->pixel_program.specular_add = false;
+    memset(draw->pixel_program.constants[RECOMP_D3D_PIXEL_CONSTANT_FOG], 0, 16u);
+    draw->general_fog[0][0] = 0.0f;
     draw->fvf = current_fvf(device);
     const bool program = (draw->fvf & 1u) != 0u;
-    recomp_d3d8_target(&draw->target);
+    get_cached_target(device, &draw->target);
     if (program) attach_program(device, draw);
     RecompD3dVertexLayout layout;
     /* The distortion pass's STR coordinate sets (TEXCOORDSIZE3 for sets 1-2). */
@@ -2096,9 +2608,9 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     /* With no stage-0 texture no texture coordinates are fetched: the menu
        (0xb0600) draws 20-byte XYZRHW|DIFFUSE lines under its quads' FVF 0x144. */
     if (!program && !gather.active && *recomp_memory_u32(device + 0xb68u) == 0u &&
-        recomp_d3d_fvf_layout(draw->fvf, &layout) && layout.stride > stride)
+        get_cached_fvf_layout(draw->fvf, &layout) && layout.stride > stride)
         draw->fvf &= ~0xf00u;
-    if ((draw->fvf & 1u) != 0u || !recomp_d3d_fvf_layout(draw->fvf, &layout) ||
+    if ((draw->fvf & 1u) != 0u || !get_cached_fvf_layout(draw->fvf, &layout) ||
         (draw->fvf & ~0xfdfu) != 0u)
         recomp_stop(2, "d3d8:draw-vertex-layout:%08x:%u:raw=%08x:program=%u:ret=%08x:prim=%u:n=%u", draw->fvf, stride,
             *recomp_memory_u32(device + 0x380u), draw->program_count,
@@ -2110,9 +2622,6 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
             recomp_scene_freeze_overlay_hidden());
 
     /* Static buffers to eliminate ~500 dynamic malloc/free calls per frame */
-    static uint16_t s_sequential_indices[65536];
-    static uint16_t s_shifted_indices[65536];
-    static bool s_indices_inited = false;
     if (__builtin_expect(!s_indices_inited, 0)) {
         for (uint32_t i = 0u; i < 65536u; ++i) s_sequential_indices[i] = (uint16_t)i;
         s_indices_inited = true;
@@ -2188,40 +2697,52 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     }
     /* Stage meshes index a few hundred vertices deep inside shared buffers;
        send only the indexed range (about 10 of 12 MB per frame otherwise). */
+    const bool offload_direct_idx = use_worker_slot && !offload_gather && !quads && !line_strip && !points && primitive != 2u;
+    uint32_t direct_idx_smallest = 0u;
     if (smallest != 0u && !offload_gather) {
-        uint16_t *dest = (uint16_t *)Switch_PresenterAllocPayload(count * sizeof(uint16_t));
-        if (dest == NULL) {
-            dest = sequential;
+        if (offload_direct_idx) {
+            direct_idx_smallest = smallest;
+            vertices += smallest * stride;
+            largest -= smallest;
+        } else {
+            uint32_t dummy_off = 0u;
+            uint16_t *dest = Switch_D3dWorkerIsActive()
+                ? (uint16_t *)Switch_D3dWorkerAllocPushBytes(count * sizeof(uint16_t), &dummy_off)
+                : (uint16_t *)Switch_PresenterAllocPayload(count * sizeof(uint16_t));
             if (dest == NULL) {
-                if (count <= 65536u) {
-                    dest = s_shifted_indices;
-                } else {
-                    sequential = malloc(count * sizeof *sequential);
-                    if (sequential == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
-                    dest = sequential;
+                dest = sequential;
+                if (dest == NULL) {
+                    if (count <= 65536u) {
+                        dest = s_shifted_indices;
+                    } else {
+                        sequential = malloc(count * sizeof *sequential);
+                        if (sequential == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
+                        dest = sequential;
+                    }
                 }
             }
+            uint32_t i = 0u;
+            uint16x8_t vsub = vdupq_n_u16((uint16_t)smallest);
+            for (; i + 8u <= count; i += 8u) {
+                uint16x8_t v = vld1q_u16(&indices[i]);
+                vst1q_u16(&dest[i], vsubq_u16(v, vsub));
+            }
+            for (; i < count; ++i) dest[i] = (uint16_t)(indices[i] - smallest);
+            indices = dest;
+            vertices += smallest * stride;
+            largest -= smallest;
         }
-        uint32_t i = 0u;
-        uint16x8_t vsub = vdupq_n_u16((uint16_t)smallest);
-        for (; i + 8u <= count; i += 8u) {
-            uint16x8_t v = vld1q_u16(&indices[i]);
-            vst1q_u16(&dest[i], vsubq_u16(v, vsub));
-        }
-        for (; i < count; ++i) dest[i] = (uint16_t)(indices[i] - smallest);
-        indices = dest;
-        vertices += smallest * stride;
-        largest -= smallest;
     }
     uint64_t t_step1 = read_cntpct();
     s_prof_t_idx += (t_step1 - t_step0);
 
     draw->vertex_count = offload_gather ? (largest - smallest + 1u) : (largest + 1u);
     uint8_t *packed = NULL;
-    SwitchGatherDrawJob gather_job;
+    SwitchGatherDrawJob local_gather_job;
+    SwitchGatherDrawJob *gjob = use_worker_slot ? gather_job_ptr : &local_gather_job;
     if (offload_gather) {
         if (gather_first == UINT32_MAX) recomp_stop(2, "d3d8:gather-user-pointer");
-        gather_job.num_parts = gather.count;
+        gjob->num_parts = gather.count;
         uint32_t at = 0u;
         for (uint32_t p = 0u; p < gather.count; ++p) {
             const uint32_t slot = STREAMS + gather.part[p].stream * 12u;
@@ -2229,20 +2750,20 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
             uint32_t base;
             if (buffer == 0u || !recomp_d3d_texture_resolve_cpu_address(*recomp_memory_u32(buffer + 4u), &base))
                 recomp_stop(2, "d3d8:gather-stream:%u", gather.part[p].stream);
-            gather_job.parts[p].source = (const uint8_t *)recomp_memory(
+            gjob->parts[p].source = (const uint8_t *)recomp_memory(
                 base + (uint64_t)(gather_first + smallest) * step + gather.part[p].offset,
                 (size_t)(draw->vertex_count - 1u) * step + gather.part[p].size);
-            gather_job.parts[p].step = step;
-            gather_job.parts[p].size = gather.part[p].size;
-            gather_job.parts[p].offset = at;
+            gjob->parts[p].step = step;
+            gjob->parts[p].size = gather.part[p].size;
+            gjob->parts[p].offset = at;
             at += gather.part[p].size;
         }
-        gather_job.vertex_count = draw->vertex_count;
-        gather_job.vertex_stride = layout.stride;
-        gather_job.indices = indices;
-        gather_job.index_count = count;
-        gather_job.smallest = smallest;
-        gather_job.owned_sequential = sequential;
+        gjob->vertex_count = draw->vertex_count;
+        gjob->vertex_stride = layout.stride;
+        gjob->indices = indices;
+        gjob->index_count = count;
+        gjob->smallest = smallest;
+        gjob->owned_sequential = sequential;
         draw->vertex_bytes = NULL;
         draw->vertex_stride = layout.stride;
         draw->index_bytes = NULL;
@@ -2267,7 +2788,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
             /* SetStateUP (0x3506f0) and DrawVerticesUP copy each declaration, then
                add stride - declaration size; overlapping records are valid. */
             const size_t total_tail_bytes = (size_t)layout.stride * draw->vertex_count;
-            packed = (uint8_t *)Switch_PresenterAllocPayload(total_tail_bytes);
+            uint32_t dummy_off = 0u;
+            packed = Switch_D3dWorkerIsActive()
+                ? (uint8_t *)Switch_D3dWorkerAllocPushBytes((uint32_t)total_tail_bytes, &dummy_off)
+                : (uint8_t *)Switch_PresenterAllocPayload(total_tail_bytes);
             if (!packed) {
                 packed = (total_tail_bytes <= sizeof(s_gather_scratch)) ? s_gather_scratch : malloc(total_tail_bytes);
             }
@@ -2284,23 +2808,34 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->primitive_type = primitive;
     draw->triangle_count = triangles;
     const RecompD3dRenderStateModel *state = recomp_d3d8_state_model();
-    recomp_d3d_blend_state(state, &draw->blend);
+    get_cached_blend_state(state, &draw->blend);
     if (!layout.pretransformed && !program) {
-        float view[16], projection[16], world[16], vp[16], blend[3][16];
-        recomp_guest_load(view, device + 0x840u, sizeof view);
-        recomp_guest_load(projection, device + 0x880u, sizeof projection);
-        recomp_guest_load(world, device + 0x9c0u, sizeof world);
+        const float *view = (const float *)recomp_memory(device + 0x840u, 64u);
+        const float *projection = (const float *)recomp_memory(device + 0x880u, 64u);
+        const float *world = (const float *)recomp_memory(device + 0x9c0u, 64u);
+        float blend[3][16];
         if (layout.blend_weight_count > 3u) recomp_stop(2, "d3d8:draw-vertex-blend");
-        recomp_guest_load(blend, device + 0xa00u, layout.blend_weight_count * sizeof blend[0]);
+        if (layout.blend_weight_count != 0u)
+            recomp_guest_load(blend, device + 0xa00u, layout.blend_weight_count * sizeof blend[0]);
         /* The game occasionally poses a mesh at a NaN position (seen after fights,
            ret 0x28708b). NV2A vertices then become NaN and are clipped, so the
            draw shows nothing; drop it instead of stopping. */
+        const bool vp_hit = s_vp_valid &&
+            memcmp(view, s_cached_view, 64u) == 0 &&
+            memcmp(projection, s_cached_proj, 64u) == 0;
         const bool fast_shadow = ((draw->blend.color_write_mask & 0x0fu) == 0u);
         if (__builtin_expect(!fast_shadow, 1)) {
             uint32_t nonfinite = 0u;
-            for (uint32_t i = 0u; i < 16u; ++i) {
-                nonfinite += !isfinite(view[i]) + !isfinite(projection[i]) + !isfinite(world[i]);
-                for (uint32_t b = 0u; b < layout.blend_weight_count; ++b) nonfinite += !isfinite(blend[b][i]);
+            if (vp_hit) {
+                for (uint32_t i = 0u; i < 16u; ++i) {
+                    nonfinite += !isfinite(world[i]);
+                    for (uint32_t b = 0u; b < layout.blend_weight_count; ++b) nonfinite += !isfinite(blend[b][i]);
+                }
+            } else {
+                for (uint32_t i = 0u; i < 16u; ++i) {
+                    nonfinite += !isfinite(view[i]) + !isfinite(projection[i]) + !isfinite(world[i]);
+                    for (uint32_t b = 0u; b < layout.blend_weight_count; ++b) nonfinite += !isfinite(blend[b][i]);
+                }
             }
             if (nonfinite != 0u) {
                 static uint32_t dropped;
@@ -2313,22 +2848,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
                 return;
             }
         }
-        static float s_cached_view[16];
-        static float s_cached_proj[16];
-        static float s_cached_vp[16];
-        static bool s_vp_valid = false;
-
-        if (s_vp_valid &&
-            memcmp(view, s_cached_view, sizeof view) == 0 &&
-            memcmp(projection, s_cached_proj, sizeof projection) == 0) {
-            memcpy(vp, s_cached_vp, sizeof vp);
-        } else {
-            multiply(view, projection, vp, "view-projection");
-            memcpy(s_cached_view, view, sizeof view);
-            memcpy(s_cached_proj, projection, sizeof projection);
-            memcpy(s_cached_vp, vp, sizeof vp);
-            s_vp_valid = true;
-        }
+        const float *vp = vp_hit ? s_cached_vp : get_cached_vp(device, view, projection);
         if (model_view_active) {
             /* A model hides a part by scaling its joint to zero; the game's
                inverse scale then leaves NaNs in the composite, and NV2A draws
@@ -2348,7 +2868,9 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
             }
             composite_clip(device, draw->transform);
         }
-        else multiply(world, vp, draw->transform, "world");
+        else {
+            multiply(world, vp, draw->transform, "world");
+        }
         draw->has_transform = true;
         draw->blend_weight_count = layout.blend_weight_count;
         if (layout.blend_weight_count != 0u &&
@@ -2391,15 +2913,17 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         state->z_enable == 2u)
         recomp_stop(2, "d3d8:draw-raster-state:%x:%x:%x:ret=%08x", state->fill_mode,
             state->edge_antialias, state->z_enable, *recomp_memory_u32(recomp_runtime.registers.esp));
-    if (primitive >= 5u && !recomp_d3d_polygon_offset(state,
-            &draw->depth_bias, &draw->slope_scaled_depth_bias))
-        recomp_stop(2, "d3d8:draw-depth-bias:ret=%08x", *recomp_memory_u32(recomp_runtime.registers.esp));
-    recomp_d3d_depth_state(state, &draw->depth);
+    if (primitive >= 5u) {
+        if (!get_cached_polygon_offset(state, &draw->depth_bias, &draw->slope_scaled_depth_bias))
+            recomp_stop(2, "d3d8:draw-depth-bias:ret=%08x", *recomp_memory_u32(recomp_runtime.registers.esp));
+    }
+    get_cached_depth_state(state, &draw->depth);
     draw->cull_mode = state->cull_mode == 0x900u ? RECOMP_D3D_CULL_CLOCKWISE :
         state->cull_mode == 0x901u ? RECOMP_D3D_CULL_COUNTER_CLOCKWISE : RECOMP_D3D_CULL_NONE;
     draw->texture_factor = state->texture_factor;
     const bool is_shadow_null = ((draw->blend.color_write_mask & 0x0fu) == 0u) && !program;
     if (!is_shadow_null) {
+        memset(draw->stage_textures, 0, sizeof draw->stage_textures);
         attach_texture(device, 0u, draw);
     }
 #ifndef _WIN32
@@ -2460,12 +2984,13 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     s_prof_t_shader += (t_step4 - t_step3);
     ++s_prof_draws;
 
-    command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    cmd_ptr->type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     if (offload_gather) {
-        RecompD3dPresenter *presenter = recomp_d3d8_presenter();
-        if (!Switch_D3dWorkerEnqueueGatherDraw(presenter, &command, &gather_job)) {
+        if (use_worker_slot) {
+            Switch_D3dWorkerCommitDraw(worker_slot, worker_tq0, true, false, 0u);
+        } else if (!Switch_D3dWorkerEnqueueGatherDraw(active_presenter, cmd_ptr, gjob)) {
             Switch_D3dWorkerFlush();
-            if (!Switch_D3dWorkerEnqueueGatherDraw(presenter, &command, &gather_job)) {
+            if (!Switch_D3dWorkerEnqueueGatherDraw(active_presenter, cmd_ptr, gjob)) {
                 recomp_stop(2, "d3d8:worker-enqueue-gather");
             }
         }
@@ -2482,12 +3007,26 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
        left-out draws still count, so the scene freeze's history of drawing
        tasks does not change. */
     if (!(layout.pretransformed && !program && *recomp_memory_u32(device + PIXEL_HANDLE) == 0u &&
-            recomp_scene_freeze_overlay_hidden()))
-        recomp_d3d8_submit(&command);
+            recomp_scene_freeze_overlay_hidden())) {
+        if (use_worker_slot) {
+            const bool copy_vtx = !(gather_first != UINT32_MAX && packed == NULL && expanded == NULL);
+            if (!Switch_D3dWorkerCommitDraw(worker_slot, worker_tq0, false, copy_vtx, direct_idx_smallest)) {
+                Switch_D3dWorkerFlush();
+                if (direct_idx_smallest != 0u && count <= 65536u) {
+                    const uint16_t *src_idx = (const uint16_t *)draw->index_bytes;
+                    for (uint32_t i = 0u; i < count; ++i) s_shifted_indices[i] = (uint16_t)(src_idx[i] - direct_idx_smallest);
+                    draw->index_bytes = s_shifted_indices;
+                }
+                recomp_d3d8_submit(cmd_ptr);
+            }
+        } else {
+            recomp_d3d8_submit(cmd_ptr);
+        }
+    }
     ++draw_submitted;
     free(sequential);
     free(expanded);
-    if (packed != s_gather_scratch && !Switch_PresenterContainsPayload(packed)) free(packed);
+    if (packed != NULL && packed != s_gather_scratch && !Switch_D3dWorkerIsInPushArena(packed) && !Switch_PresenterContainsPayload(packed)) free(packed);
 }
 
 static void draw_up(void)
@@ -2676,7 +3215,7 @@ static bool try_offload_push_shadow(uint32_t start, uint32_t end)
     }
 
     RecompD3dVertexLayout layout;
-    if (!recomp_d3d_fvf_layout(fvf, &layout) || layout.stride == 0u ||
+    if (!get_cached_fvf_layout(fvf, &layout) || layout.stride == 0u ||
         layout.pretransformed || layout.blend_weight_count != 0u) {
         ++s_push_fail[2];
         return false;
@@ -2684,52 +3223,22 @@ static bool try_offload_push_shadow(uint32_t start, uint32_t end)
 
     const RecompD3dRenderStateModel *state = recomp_d3d8_state_model();
     RecompD3dBlendState blend;
-    recomp_d3d_blend_state(state, &blend);
+    get_cached_blend_state(state, &blend);
     if ((blend.color_write_mask & 0x0fu) != 0u) { ++s_push_fail[3]; return false; }
     if (state->fill_mode != 0u && state->fill_mode != 0x1b02u) { ++s_push_fail[4]; return false; }
     if (state->z_enable == 2u) { ++s_push_fail[4]; return false; }
 
     int32_t depth_bias = 0;
     float slope_scaled_depth_bias = 0.0f;
-    if (!recomp_d3d_polygon_offset(state, &depth_bias, &slope_scaled_depth_bias)) {
+    if (!get_cached_polygon_offset(state, &depth_bias, &slope_scaled_depth_bias)) {
         ++s_push_fail[4];
         return false;
     }
 
-    bool in_begin = false;
-    for (uint32_t at = start; at < end;) {
-        const uint32_t header = *recomp_memory_u32(at);
-        if ((header & 3u) != 0u || (header & 0xa0000000u) != 0u || ((header >> 13u) & 7u) != 0u) {
-            ++s_push_fail[6];
-            return false;
-        }
-        const uint32_t method = header & 0x1ffcu, count = (header >> 18u) & 0x7ffu;
-        const bool repeat = (header & 0x40000000u) != 0u;
-        if (at + 4u + count * 4u > end) { ++s_push_fail[6]; return false; }
-        if (repeat && method == NV_INLINE_ARRAY) {
-            if (!in_begin) { ++s_push_fail[6]; return false; }
-        } else {
-            for (uint32_t i = 0u; i < count; ++i) {
-                const uint32_t target = repeat ? method : method + i * 4u;
-                if (target == NV_INLINE_ARRAY) {
-                    if (!in_begin) { ++s_push_fail[6]; return false; }
-                } else if (target == NV_BEGIN_END) {
-                    const uint32_t value = *recomp_memory_u32(at + 4u + i * 4u);
-                    if (value != 0u) {
-                        if (value == 1u || value == 2u || value == 4u) { ++s_push_fail[6]; return false; }
-                        in_begin = true;
-                    } else {
-                        in_begin = false;
-                    }
-                } else {
-                    ++s_push_fail[7];
-                    return false;
-                }
-            }
-        }
-        at += 4u + count * 4u;
+    if (end - start < 8u || *recomp_memory_u32(start) != 0x000417fcu) {
+        ++s_push_fail[6];
+        return false;
     }
-    if (in_begin) { ++s_push_fail[6]; return false; }
 
     if (model_view_active) {
         uint32_t nonfinite_composite = 0u;
@@ -2737,72 +3246,80 @@ static bool try_offload_push_shadow(uint32_t start, uint32_t end)
         if (nonfinite_composite != 0u) return true;
     }
 
+    const uint32_t scissors = *recomp_memory_u32(device + 0x17e0u);
+    if (scissors > 1u || (scissors != 0u && *recomp_memory_u32(device + 0x17e4u) != 0u))
+        return false;
+
     const uint32_t push_bytes = end - start;
     uint32_t push_offset = 0u;
     uint8_t *dst = Switch_D3dWorkerAllocPushBytes(push_bytes, &push_offset);
     if (dst == NULL) return false;
     memcpy(dst, recomp_memory(start, push_bytes), push_bytes);
 
-    SwitchPushShadowJob job;
-    job.push_offset = push_offset;
-    job.push_bytes = push_bytes;
-    job.fvf = fvf;
-    recomp_d3d8_target(&job.target);
-    job.blend = blend;
-    recomp_d3d_depth_state(state, &job.depth);
-    job.cull_mode = state->cull_mode == 0x900u ? RECOMP_D3D_CULL_CLOCKWISE :
+    uint32_t slot = 0u;
+    uint64_t tq0 = 0u;
+    SwitchPushShadowJob *job = Switch_D3dWorkerBeginPushShadow(presenter, &slot, &tq0);
+    if (job == NULL) return false;
+
+    job->push_offset = push_offset;
+    job->push_bytes = push_bytes;
+    job->fvf = fvf;
+    get_cached_target(device, &job->target);
+    job->blend = blend;
+    get_cached_depth_state(state, &job->depth);
+    job->cull_mode = state->cull_mode == 0x900u ? RECOMP_D3D_CULL_CLOCKWISE :
         state->cull_mode == 0x901u ? RECOMP_D3D_CULL_COUNTER_CLOCKWISE : RECOMP_D3D_CULL_NONE;
-    job.depth_bias = depth_bias;
-    job.slope_scaled_depth_bias = slope_scaled_depth_bias;
-    job.texture_factor = state->texture_factor;
+    job->depth_bias = depth_bias;
+    job->slope_scaled_depth_bias = slope_scaled_depth_bias;
+    job->texture_factor = state->texture_factor;
 
     if (model_view_active) {
-        composite_clip(device, job.transform);
+        composite_clip(device, job->transform);
     } else {
-        float view[16], projection[16], world[16], vp[16];
-        recomp_guest_load(view, device + 0x840u, sizeof view);
-        recomp_guest_load(projection, device + 0x880u, sizeof projection);
-        recomp_guest_load(world, device + 0x9c0u, sizeof world);
-        static float s_push_cached_view[16];
-        static float s_push_cached_proj[16];
-        static float s_push_cached_vp[16];
-        static bool s_push_vp_valid = false;
-        if (s_push_vp_valid &&
-            memcmp(view, s_push_cached_view, sizeof view) == 0 &&
-            memcmp(projection, s_push_cached_proj, sizeof projection) == 0) {
-            memcpy(vp, s_push_cached_vp, sizeof vp);
+        const float *view = (const float *)recomp_memory(device + 0x840u, 64u);
+        const float *projection = (const float *)recomp_memory(device + 0x880u, 64u);
+        const float *world = (const float *)recomp_memory(device + 0x9c0u, 64u);
+        const float *vp = get_cached_vp(device, view, projection);
+        static float s_last_shadow_world[16];
+        static float s_last_shadow_vp[16];
+        static float s_last_shadow_transform[16];
+        static bool s_last_shadow_valid = false;
+        if (s_last_shadow_valid &&
+            memcmp(world, s_last_shadow_world, 64u) == 0 &&
+            memcmp(vp, s_last_shadow_vp, 64u) == 0) {
+            memcpy(job->transform, s_last_shadow_transform, 64u);
         } else {
-            multiply(view, projection, vp, "view-projection");
-            memcpy(s_push_cached_view, view, sizeof view);
-            memcpy(s_push_cached_proj, projection, sizeof projection);
-            memcpy(s_push_cached_vp, vp, sizeof vp);
-            s_push_vp_valid = true;
+            multiply(world, vp, job->transform, "world");
+            memcpy(s_last_shadow_world, world, 64u);
+            memcpy(s_last_shadow_vp, vp, 64u);
+            memcpy(s_last_shadow_transform, job->transform, 64u);
+            s_last_shadow_valid = true;
         }
-        multiply(world, vp, job.transform, "world");
     }
-    job.has_transform = true;
+    job->has_transform = true;
 
-    RecompD3dViewport viewport;
-    recomp_guest_load(&viewport, device + 0xac0u, sizeof viewport);
-    const float rect[6] = {(float)viewport.x, (float)viewport.y, (float)viewport.width,
-        (float)viewport.height, viewport.min_z, viewport.max_z};
-    memcpy(job.viewport, rect, sizeof rect);
-    recomp_guest_load(job.screen_space_offset, device + 0xad8u, sizeof job.screen_space_offset);
-    for (uint32_t i = 0u; i < 2u; ++i) job.screen_space_offset[i] -= 0.53125f;
+    const RecompD3dViewport *viewport = (const RecompD3dViewport *)recomp_memory(device + 0xac0u, sizeof(RecompD3dViewport));
+    job->viewport[0] = (float)viewport->x;
+    job->viewport[1] = (float)viewport->y;
+    job->viewport[2] = (float)viewport->width;
+    job->viewport[3] = (float)viewport->height;
+    job->viewport[4] = viewport->min_z;
+    job->viewport[5] = viewport->max_z;
+    const float *sso = (const float *)recomp_memory(device + 0xad8u, 8u);
+    job->screen_space_offset[0] = sso[0] - 0.53125f;
+    job->screen_space_offset[1] = sso[1] - 0.53125f;
 
-    const uint32_t scissors = *recomp_memory_u32(device + 0x17e0u);
-    if (scissors > 1u || (scissors != 0u && *recomp_memory_u32(device + 0x17e4u) != 0u))
-        return false;
     if (scissors != 0u) {
-        recomp_guest_load(job.scissor, device + 0x1760u, sizeof job.scissor);
+        memcpy(job->scissor, recomp_memory(device + 0x1760u, sizeof job->scissor), sizeof job->scissor);
     } else {
-        job.scissor[0] = (int32_t)viewport.x;
-        job.scissor[1] = (int32_t)viewport.y;
-        job.scissor[2] = (int32_t)(viewport.x + viewport.width);
-        job.scissor[3] = (int32_t)(viewport.y + viewport.height);
+        job->scissor[0] = (int32_t)viewport->x;
+        job->scissor[1] = (int32_t)viewport->y;
+        job->scissor[2] = (int32_t)(viewport->x + viewport->width);
+        job->scissor[3] = (int32_t)(viewport->y + viewport->height);
     }
 
-    return Switch_D3dWorkerEnqueuePushShadow(presenter, &job);
+    Switch_D3dWorkerCommitPushShadow(slot, tq0);
+    return true;
 }
 
 static void end_push(void)

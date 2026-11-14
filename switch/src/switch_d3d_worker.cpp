@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -33,6 +34,7 @@ enum JobType {
 
 struct WorkerJob {
     JobType type;
+    uint32_t direct_index_smallest;
     RecompD3dPresenter *presenter;
     union {
         RecompD3dPresenterCommand direct;
@@ -193,21 +195,82 @@ static inline void copyPresenterCommand(RecompD3dPresenterCommand *dst, const Re
         d.program_mask_lod_bias = 0.0f;
     }
     if (s.directional.enabled) {
-        d.directional = s.directional;
+        if (s.blend_weight_count == 0u) {
+            const uint32_t lc = s.directional.count < 8u ? s.directional.count : 8u;
+            d.directional.enabled = true;
+            d.directional.normalize = s.directional.normalize;
+            d.directional.stage_mode = s.directional.stage_mode;
+            d.directional.count = lc;
+            std::memcpy(d.directional.normal_transforms[0], s.directional.normal_transforms[0], sizeof(float) * 16);
+            std::memcpy(d.directional.ambient_emissive, s.directional.ambient_emissive, sizeof(float) * 4);
+            std::memcpy(d.directional.material_diffuse, s.directional.material_diffuse, sizeof(float) * 4);
+            if (lc > 0u) {
+                const size_t lbytes = lc * sizeof(float) * 4;
+                std::memcpy(d.directional.directions, s.directional.directions, lbytes);
+                std::memcpy(d.directional.colors, s.directional.colors, lbytes);
+                std::memcpy(d.directional.positions, s.directional.positions, lbytes);
+                std::memcpy(d.directional.attenuation, s.directional.attenuation, lbytes);
+                std::memcpy(d.directional.ambient, s.directional.ambient, lbytes);
+                std::memcpy(d.directional.specular, s.directional.specular, lbytes);
+            }
+            std::memcpy(d.directional.world_transforms[0], s.directional.world_transforms[0], sizeof(float) * 16);
+            std::memcpy(d.directional.view, s.directional.view, sizeof(float) * 4 * 6); // view, stage, sources, global_ambient, material_ambient, material_emissive
+        } else {
+            d.directional = s.directional;
+        }
     } else {
         d.directional.enabled = false;
     }
-    const size_t tail_off = offsetof(RecompD3dPresenterDrawCommand, vertex_bytes);
-    fastCopyNeon(reinterpret_cast<uint8_t *>(&d) + tail_off,
-                 reinterpret_cast<const uint8_t *>(&s) + tail_off,
-                 sizeof(RecompD3dPresenterDrawCommand) - tail_off);
+    const size_t tail1_off = offsetof(RecompD3dPresenterDrawCommand, vertex_bytes);
+    const size_t tail1_end = offsetof(RecompD3dPresenterDrawCommand, has_alpha_mask);
+    fastCopyNeon(reinterpret_cast<uint8_t *>(&d) + tail1_off,
+                 reinterpret_cast<const uint8_t *>(&s) + tail1_off,
+                 tail1_end - tail1_off);
+
+    if (s.pixel_program.kind == RECOMP_D3D_PIXEL_FIXED_FUNCTION) {
+        d.pixel_program.kind = RECOMP_D3D_PIXEL_FIXED_FUNCTION;
+        const uint32_t sc = s.pixel_program.stage_count < RECOMP_D3D_PIXEL_STAGES
+            ? s.pixel_program.stage_count : RECOMP_D3D_PIXEL_STAGES;
+        d.pixel_program.stage_count = sc;
+        if (sc > 0u) {
+            std::memcpy(d.pixel_program.stages, s.pixel_program.stages, sc * sizeof(RecompD3dPixelStage));
+        }
+        d.pixel_program.specular_add = s.pixel_program.specular_add;
+        std::memcpy(d.pixel_program.constants, s.pixel_program.constants, 5u * sizeof(float) * 4u);
+        std::memcpy(d.pixel_program.constants[RECOMP_D3D_PIXEL_CONSTANT_FOG],
+                    s.pixel_program.constants[RECOMP_D3D_PIXEL_CONSTANT_FOG], sizeof(float) * 4u);
+    } else if (s.pixel_program.kind == RECOMP_D3D_PIXEL_COMBINERS && s.pixel_program.combiners.control == 0u) {
+        d.pixel_program.kind = RECOMP_D3D_PIXEL_COMBINERS;
+        d.pixel_program.combiners.control = 0u;
+    } else {
+        const size_t pp_off = offsetof(RecompD3dPresenterDrawCommand, pixel_program);
+        fastCopyNeon(reinterpret_cast<uint8_t *>(&d) + pp_off,
+                     reinterpret_cast<const uint8_t *>(&s) + pp_off,
+                     sizeof(RecompD3dPixelProgram));
+    }
+    const size_t after_pp_off = offsetof(RecompD3dPresenterDrawCommand, pixel_program) + sizeof(RecompD3dPixelProgram);
+    const size_t fog_off = offsetof(RecompD3dPresenterDrawCommand, general_fog);
+    if (fog_off > after_pp_off) {
+        fastCopyNeon(reinterpret_cast<uint8_t *>(&d) + after_pp_off,
+                     reinterpret_cast<const uint8_t *>(&s) + after_pp_off,
+                     fog_off - after_pp_off);
+    }
+    if (s.general_fog[0][0] == 0.0f) {
+        d.general_fog[0][0] = 0.0f;
+    } else {
+        std::memcpy(d.general_fog, s.general_fog, sizeof(d.general_fog));
+    }
+    const size_t after_fog_off = fog_off + sizeof(d.general_fog);
+    if (sizeof(RecompD3dPresenterDrawCommand) > after_fog_off) {
+        fastCopyNeon(reinterpret_cast<uint8_t *>(&d) + after_fog_off,
+                     reinterpret_cast<const uint8_t *>(&s) + after_fog_off,
+                     sizeof(RecompD3dPresenterDrawCommand) - after_fog_off);
+    }
 }
 
 void executeGatherDraw(RecompD3dPresenter *presenter, SwitchGatherDrawJob &job)
 {
-    RecompD3dPresenterCommand cmd;
-    copyPresenterCommand(&cmd, &job.cmd);
-    RecompD3dPresenterDrawCommand *draw = &cmd.data.draw;
+    RecompD3dPresenterDrawCommand *draw = &job.cmd.data.draw;
 
     uint16_t *dest_to_free = nullptr;
     if (job.smallest != 0u) {
@@ -285,7 +348,7 @@ void executeGatherDraw(RecompD3dPresenter *presenter, SwitchGatherDrawJob &job)
     }
 
     draw->vertex_bytes = out;
-    Switch_PresenterSubmitDirect(presenter, &cmd);
+    Switch_PresenterSubmitDirect(presenter, &job.cmd);
 
     if (dest_to_free) std::free(dest_to_free);
     if (free_out) std::free(out);
@@ -424,6 +487,28 @@ void workerLoop()
         switch (job.type) {
         case JOB_DIRECT: {
             ++s_prof_direct_cnt;
+            if (job.direct_index_smallest != 0u) {
+                RecompD3dPresenterDrawCommand &d = job.data.direct.data.draw;
+                const uint32_t icount = d.index_count;
+                const size_t idx_bytes = static_cast<size_t>(icount) * sizeof(uint16_t);
+                const uint16_t *src = static_cast<const uint16_t *>(d.index_bytes);
+                uint16_t *dst = reinterpret_cast<uint16_t *>(Switch_PresenterAllocPayload(idx_bytes));
+                static std::vector<uint16_t> s_direct_idx_fallback;
+                if (dst == nullptr) {
+                    if (s_direct_idx_fallback.size() < icount) s_direct_idx_fallback.resize(icount);
+                    dst = s_direct_idx_fallback.data();
+                }
+                const uint16_t sub = static_cast<uint16_t>(job.direct_index_smallest);
+                uint32_t i = 0u;
+#ifdef __aarch64__
+                const uint16x8_t vsub = vdupq_n_u16(sub);
+                for (; i + 8u <= icount; i += 8u) {
+                    vst1q_u16(&dst[i], vsubq_u16(vld1q_u16(&src[i]), vsub));
+                }
+#endif
+                for (; i < icount; ++i) dst[i] = static_cast<uint16_t>(src[i] - sub);
+                d.index_bytes = dst;
+            }
             const bool is_present = (job.data.direct.type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT);
             Switch_PresenterSubmitDirect(job.presenter, &job.data.direct);
             if (is_present) {
@@ -555,6 +640,16 @@ static inline void commitJobSlot(uint32_t t)
     }
 }
 
+extern "C" bool Switch_D3d8IsStaticSequentialIndices(const void *ptr);
+
+bool Switch_D3dWorkerIsInPushArena(const void *ptr)
+{
+    if (!g_worker.push_arena || !ptr) return false;
+    const uintptr_t p = reinterpret_cast<uintptr_t>(ptr);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(g_worker.push_arena);
+    return p >= base && p < base + 2u * PUSH_ARENA_BYTES;
+}
+
 bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *cmd)
 {
     if (!g_worker.active) return false;
@@ -562,12 +657,13 @@ bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3
     const uint32_t slot = acquireJobSlot();
     WorkerJob &job = g_worker.jobs[slot];
     job.type = JOB_DIRECT;
+    job.direct_index_smallest = 0u;
     job.presenter = presenter;
     copyPresenterCommand(&job.data.direct, cmd);
     if (cmd->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
         RecompD3dPresenterDrawCommand &d = job.data.direct.data.draw;
         const size_t vtx_bytes = static_cast<size_t>(d.vertex_count) * d.vertex_stride;
-        if (d.vertex_bytes != nullptr && vtx_bytes > 0u) {
+        if (d.vertex_bytes != nullptr && vtx_bytes > 0u && !Switch_D3dWorkerIsInPushArena(d.vertex_bytes)) {
             if (vtx_bytes > PUSH_ARENA_BYTES) return false;
             uint32_t offset = 0u;
             uint8_t *dst = Switch_D3dWorkerAllocPushBytes(static_cast<uint32_t>(vtx_bytes), &offset);
@@ -576,7 +672,61 @@ bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3
             d.vertex_bytes = dst;
         }
         const size_t idx_bytes = static_cast<size_t>(d.index_count) * sizeof(uint16_t);
-        if (d.index_bytes != nullptr && idx_bytes > 0u) {
+        if (d.index_bytes != nullptr && idx_bytes > 0u &&
+            !Switch_D3dWorkerIsInPushArena(d.index_bytes) &&
+            !Switch_D3d8IsStaticSequentialIndices(d.index_bytes)) {
+            if (idx_bytes > PUSH_ARENA_BYTES) return false;
+            uint32_t offset = 0u;
+            uint8_t *dst = Switch_D3dWorkerAllocPushBytes(static_cast<uint32_t>(idx_bytes), &offset);
+            if (dst == nullptr) return false;
+            fastCopyNeon(dst, static_cast<const uint8_t *>(d.index_bytes), idx_bytes);
+            d.index_bytes = dst;
+        }
+    }
+    commitJobSlot(slot);
+    s_prof_enqueue_ticks += (worker_cntpct() - tq0);
+    return true;
+}
+
+RecompD3dPresenterCommand *Switch_D3dWorkerBeginDraw(
+    RecompD3dPresenter *presenter, uint32_t *out_slot, uint64_t *out_tq0,
+    SwitchGatherDrawJob **out_gather)
+{
+    if (!g_worker.active) return nullptr;
+    *out_tq0 = worker_cntpct();
+    const uint32_t slot = acquireJobSlot();
+    WorkerJob &job = g_worker.jobs[slot];
+    job.presenter = presenter;
+    *out_slot = slot;
+    if (out_gather) *out_gather = &job.data.gather;
+    return &job.data.direct;
+}
+
+bool Switch_D3dWorkerCommitDraw(uint32_t slot, uint64_t tq0, bool is_gather, bool copy_vtx, uint32_t index_smallest)
+{
+    WorkerJob &job = g_worker.jobs[slot];
+    job.direct_index_smallest = 0u;
+    if (is_gather) {
+        job.type = JOB_GATHER_DRAW;
+    } else {
+        job.type = JOB_DIRECT;
+        RecompD3dPresenterDrawCommand &d = job.data.direct.data.draw;
+        if (copy_vtx) {
+            const size_t vtx_bytes = static_cast<size_t>(d.vertex_count) * d.vertex_stride;
+            if (d.vertex_bytes != nullptr && vtx_bytes > 0u && !Switch_D3dWorkerIsInPushArena(d.vertex_bytes)) {
+                if (vtx_bytes > PUSH_ARENA_BYTES) return false;
+                uint32_t offset = 0u;
+                uint8_t *dst = Switch_D3dWorkerAllocPushBytes(static_cast<uint32_t>(vtx_bytes), &offset);
+                if (dst == nullptr) return false;
+                fastCopyNeon(dst, static_cast<const uint8_t *>(d.vertex_bytes), vtx_bytes);
+                d.vertex_bytes = dst;
+            }
+        }
+        job.direct_index_smallest = index_smallest;
+        const size_t idx_bytes = static_cast<size_t>(d.index_count) * sizeof(uint16_t);
+        if (index_smallest == 0u && d.index_bytes != nullptr && idx_bytes > 0u &&
+            !Switch_D3dWorkerIsInPushArena(d.index_bytes) &&
+            !Switch_D3d8IsStaticSequentialIndices(d.index_bytes)) {
             if (idx_bytes > PUSH_ARENA_BYTES) return false;
             uint32_t offset = 0u;
             uint8_t *dst = Switch_D3dWorkerAllocPushBytes(static_cast<uint32_t>(idx_bytes), &offset);
@@ -620,6 +770,24 @@ uint8_t *Switch_D3dWorkerAllocPushBytes(uint32_t bytes, uint32_t *out_offset)
     uint8_t *ptr = g_worker.push_arena + base + g_worker.push_arena_used;
     g_worker.push_arena_used += aligned;
     return ptr;
+}
+
+SwitchPushShadowJob *Switch_D3dWorkerBeginPushShadow(RecompD3dPresenter *presenter, uint32_t *out_slot, uint64_t *out_tq0)
+{
+    if (!g_worker.active) return nullptr;
+    *out_tq0 = worker_cntpct();
+    const uint32_t slot = acquireJobSlot();
+    WorkerJob &job = g_worker.jobs[slot];
+    job.type = JOB_PUSH_SHADOW;
+    job.presenter = presenter;
+    *out_slot = slot;
+    return &job.data.push;
+}
+
+void Switch_D3dWorkerCommitPushShadow(uint32_t slot, uint64_t tq0)
+{
+    commitJobSlot(slot);
+    s_prof_enqueue_ticks += (worker_cntpct() - tq0);
 }
 
 bool Switch_D3dWorkerEnqueuePushShadow(RecompD3dPresenter *presenter, const SwitchPushShadowJob *pjob)

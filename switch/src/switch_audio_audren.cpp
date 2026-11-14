@@ -557,14 +557,6 @@ void recomp_audio_output_submit(
     }
 
     s_submit_counter++;
-    if ((s_submit_counter % 500ULL) == 1ULL) {
-        printf("[SwitchAudio] Submit #%llu (wb=%llu): slot=%u hw=%d rate=%u ch=%u frames=%u vol_db=%d active_wb=%d\n",
-               (unsigned long long)s_submit_counter,
-               (unsigned long long)s_wavebuf_counter,
-               slot, hw_idx, sample_rate, channels,
-               num_frames, volume_hundredth_db,
-               countActiveWavebufs(v));
-    }
 }
 
 } // extern "C"

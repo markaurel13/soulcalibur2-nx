@@ -68,8 +68,6 @@ static void flush_log_line(const char *line, size_t len) {
 
     if (s_sd_log) {
         fwrite(line, 1, len, s_sd_log);
-        fflush(s_sd_log);
-        fsync(fileno(s_sd_log));
     }
     if (s_nxlink_sock >= 0) {
         send(s_nxlink_sock, line, len, MSG_DONTWAIT);
@@ -237,10 +235,11 @@ int main(int argc, char *argv[]) {
     mkdir("sdmc:/switch/soulcalibur2/disc", 0777);
     mkdir("sdmc:/switch/soulcalibur2/save", 0777);
 
-    // 2. Abrir archivo de log persistente en microSD
+    // 2. Abrir archivo de log persistente en microSD (buffer RAM de 64 KB sin fsync por linea)
+    static char s_sd_log_buf[65536];
     s_sd_log = fopen("sdmc:/switch/soulcalibur2/soulcalibur2.log", "w");
     if (s_sd_log) {
-        setvbuf(s_sd_log, NULL, _IONBF, 0);
+        setvbuf(s_sd_log, s_sd_log_buf, _IOFBF, sizeof(s_sd_log_buf));
     }
 
     // 3. Inicializar soporte de sockets y conectar con nxlink en la PC

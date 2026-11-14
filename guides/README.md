@@ -57,6 +57,12 @@ The raw documentation from each upstream repository is archived in dedicated sub
   - `deko3d-renderer-guide.md`: Direct Deko3D renderer setup for Xenos GPU commands.
   - `porting-a-360-game-prompt.md`: AI prompt templates for porting 360 games.
   - `cpu-rounds.md`, `gpu-optimisation-candidates.md`, `switch-testing.md`.
+- [**`renut_nx_ultimate_base/`**](file:///home/mark/Proyectos/soulcalibur2_nx/guides/renut_nx_ultimate_base/)
+  - Consolidated Xbox 360 / reNut Switch porting base by `@ChanseyIsTheBest` synthesizing universal fixes and optimizations across 15+ Switch ports (Katamari, SASRT, Blur, Kameo, Halo 3, RR6, Viva Piñata, Bangai-O, etc.).
+  - `docs/README.md`: Documentation index.
+  - `docs/hand-and-machine-optimising-guide.md` & `docs/optimising-functions.md`: Three-tier optimization discipline (Codegen passes, Machine copies in-place vs hooked, Hand natives), PGO+LTO impact, and console profiling (`switch_hot_pcs.py`, `profile_breakdown.py`).
+  - `docs/ultimate-fixes.md` & `docs/off-by-default.md`: Catalog of every universal renderer/codegen/SDK fix with evidence, tests, and measured console trade-offs.
+  - `docs/sasrt-batch-cc2.md`, `docs/building.md`, `docs/codegen-crash-fixes.md`, `docs/porting-a-360-game-prompt.md`.
 - [**`renut-nx/docs/`**](file:///home/mark/Proyectos/soulcalibur2_nx/guides/renut-nx/docs/)
   - `deko3d-renderer.md`: In-depth 157 KB documentation of Deko3d renderer architecture.
   - `deko3d-shader-optimisations.md`: Maxwell GPU shader optimizations.

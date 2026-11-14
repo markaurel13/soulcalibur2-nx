@@ -23,6 +23,9 @@ if(SC2_FUNC_PROFILE)
     add_compile_definitions(SC2_FUNC_PROFILE=1)
 endif()
 
+option(SC2_ENABLE_LTO "Enable Link-Time Optimization (disable for fast incremental dev builds)" OFF)
+option(SC2_GUEST_PROF "Enable per-function --wrap guest profiling" OFF)
+
 set(_CHUNK_NAMES
     recomp_0000.c
     recomp_0001.c
@@ -51,6 +54,8 @@ foreach(_name IN LISTS _CHUNK_NAMES)
                 string(REPLACE "void sub_00011250(void)\n{" "void __real_sub_00011250(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00011390(void)\n{" "void __real_sub_00011390(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_000123C0(void)\n{" "void __real_sub_000123C0(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00012570(void)\n{" "void __real_sub_00012570(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00012860(void)\n{" "void __real_sub_00012860(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00012600(void)\n{" "void __real_sub_00012600(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00012640(void)\n{" "void __real_sub_00012640(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_000126A0(void)\n{" "void __real_sub_000126A0(void)\n{" _CONTENT "${_CONTENT}")
@@ -58,6 +63,15 @@ foreach(_name IN LISTS _CHUNK_NAMES)
                 string(REPLACE "void sub_00012550(void)\n{" "void __real_sub_00012550(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00012790(void)\n{" "void __real_sub_00012790(void)\n{" _CONTENT "${_CONTENT}")
                 string(REPLACE "void sub_00011710(void)\n{" "void __real_sub_00011710(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00012950(void)\n{" "void __real_sub_00012950(void)\n{" _CONTENT "${_CONTENT}")
+            elseif(_name STREQUAL "recomp_0002.c")
+                string(REPLACE "void sub_00079AE0(void)\n{" "void __real_sub_00079AE0(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00079A30(void)\n{" "void __real_sub_00079A30(void)\n{" _CONTENT "${_CONTENT}")
+                string(REPLACE "void sub_00079CD0(void)\n{" "void __real_sub_00079CD0(void)\n{" _CONTENT "${_CONTENT}")
+            elseif(_name STREQUAL "recomp_0003.c")
+                string(REPLACE "void sub_000EB2A0(void)\n{" "void __real_sub_000EB2A0(void)\n{" _CONTENT "${_CONTENT}")
+            elseif(_name STREQUAL "recomp_0006.c")
+                string(REPLACE "void sub_00145A64(void)\n{" "void __real_sub_00145A64(void)\n{" _CONTENT "${_CONTENT}")
             endif()
             if(SC2_FUNC_PROFILE)
                 string(REGEX REPLACE "void (sub_([0-9A-F]+))\\(void\\)\n\\{\n" "void \\1(void)\n{\n    SC2_PROF_SCOPE(0x\\2u);\n" _CONTENT "${_CONTENT}")
@@ -85,13 +99,15 @@ endforeach()
 
 # Optimization flags for Cortex-A57 (Stock clocks 1020 MHz)
 add_compile_options(
-    -O2
+    -O3
     -mcpu=cortex-a57+crypto
     -mtune=cortex-a57
     -fno-math-errno
     -fno-trapping-math
+    -ffp-contract=off
     -ftree-vectorize
     -fomit-frame-pointer
+    $<$<AND:$<BOOL:${SC2_ENABLE_LTO}>,$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>>:-flto=4>
     -Wall
     -Wno-unused-variable
     -Wno-unused-label
@@ -103,6 +119,7 @@ add_compile_definitions(
     RECOMP_XBE_SHA256="7ce12851850ab46766f77c612b251afe7c8bd81f879e11b4836bdf766be542c6"
     __SWITCH__=1
     main=sc2_runner_main
+    $<$<BOOL:${SC2_GUEST_PROF}>:SC2_GUEST_PROF=1>
 )
 
 include_directories(
@@ -129,13 +146,22 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_sub_24720.c
     src/switch_sub_2b670.c
     src/switch_sub_240c0.c
+    src/switch_sub_843d0.c
+    src/switch_sub_2b670.c
     src/switch_bone_neon.c
     src/switch_math_neon.c
+    src/switch_fast_mem_wrap.c
 )
+
+set(RECOMP_0001_SRC ${PROGRAM_DIR}/recomp_0001.c)
+if(EXISTS ${CMAKE_BINARY_DIR}/recomp_0001_prof.c)
+    set(RECOMP_0001_SRC ${CMAKE_BINARY_DIR}/recomp_0001_prof.c)
+    set_source_files_properties(${RECOMP_0001_SRC} PROPERTIES COMPILE_DEFINITIONS "SC2_FUNC_PROFILE=1;RECOMP_GENERATED_CODE=1")
+endif()
 
 set(PROGRAM_SOURCES
     ${PROGRAM_DIR}/recomp_0000.c
-    ${PROGRAM_DIR}/recomp_0001.c
+    ${RECOMP_0001_SRC}
     ${PROGRAM_DIR}/recomp_0002.c
     ${PROGRAM_DIR}/recomp_0003.c
     ${PROGRAM_DIR}/recomp_0004.c
@@ -265,10 +291,37 @@ target_link_libraries(soulcalibur2
     m
 )
 
+set_source_files_properties(
+    ${PROGRAM_SOURCES}
+    src/switch_sub_2b670.c
+    src/switch_sub_843d0.c
+    src/switch_sub_2b670.c
+    src/switch_profiler.cpp
+    PROPERTIES COMPILE_OPTIONS "-fno-lto"
+)
+
 target_link_options(soulcalibur2
     PRIVATE
+    -O3
+    $<$<BOOL:${SC2_ENABLE_LTO}>:-flto=4>
+    -ffp-contract=off
+    -fno-math-errno
+    -fno-trapping-math
     -Wl,--wrap=sub_0002B670
     -Wl,--wrap=sub_000240C0
+    -Wl,--wrap=sub_00012860
+    -Wl,--wrap=sub_00012570
+    -Wl,--wrap=sub_00012640
+    -Wl,--wrap=sub_000126A0
+    -Wl,--wrap=sub_000125A0
+    -Wl,--wrap=sub_00012B00
+    -Wl,--wrap=sub_00012BC0
+    -Wl,--wrap=sub_000129F0
+    -Wl,--wrap=sub_00012790
+    -Wl,--wrap=sub_00012950
+    -Wl,--wrap=sub_000123C0
+    -Wl,--wrap=recomp_d3d_light_set
+    -Wl,--wrap=recomp_d3d_set_simple_render_state
     -Wl,--wrap=recomp_d3d8_submit
     -Wl,--wrap=recomp_dsound_buffers_pump
     -Wl,--wrap=recomp_hrtf_render
@@ -277,15 +330,157 @@ target_link_options(soulcalibur2
     -Wl,--wrap=recomp_d3d_wait_present
     -Wl,--wrap=recomp_lookup
     -Wl,--wrap=recomp_lookup_manual
+    -Wl,--wrap=recomp_dispatch_indirect_site
+    -Wl,--wrap=nanosleep
+    -Wl,--wrap=recomp_audio_output_submit
+    -Wl,--wrap=recomp_audio_output_reset_voice
+    -Wl,--wrap=sub_000843D0
+    -Wl,--wrap=sub_0004B630
+    -Wl,--wrap=sub_0004D090
+    -Wl,--wrap=sub_00069370
+    -Wl,--wrap=sub_0003EE30
+    -Wl,--wrap=sub_000343A0
+    -Wl,--wrap=sub_0003D9A0
+    -Wl,--wrap=sub_0003D9F0
+    -Wl,--wrap=sub_00046EA0
+    -Wl,--wrap=sub_000423B0
+    -Wl,--wrap=sub_0003FCF0
+    -Wl,--wrap=sub_00042A80
+    -Wl,--wrap=sub_00048780
+    -Wl,--wrap=sub_00048C00
+    -Wl,--wrap=sub_00041120
+    -Wl,--wrap=sub_00041550
+    -Wl,--wrap=sub_000496E0
+    -Wl,--wrap=sub_00040670
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00012AB0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00014B90>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00024E10>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0002AA30>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0002ABC0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0002AD90>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0002AF00>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0002B050>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0002B2F0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0002B4F0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0002EA90>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00060F70>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00061B10>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00076BD0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00076C20>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0008FFC0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00090110>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000DACA0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0004B630>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0004D090>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003EE30>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00040DD0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00041FB0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00042090>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00046EA0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00046FF0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00053680>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00053700>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000A28A0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000A29E0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000A2A20>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000ADA70>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0001F600>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0004D610>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00041120>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000343A0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0004C8C0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00029E50>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0004A090>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00089BA0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003FCF0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00042A80>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000423B0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00048C00>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00048780>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00069370>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0004B420>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00042160>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00048510>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000E9610>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0004B030>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000477A0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000444F0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00046280>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000ED5C0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003DAB0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00040670>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00041330>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00041AF0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000440E0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00044B00>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00046A50>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00047140>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00047750>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00048A40>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000496E0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00089850>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000E6410>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000E94F0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0007BD50>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000F62D0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000F67D0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000F6A10>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000F7170>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00011B60>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00012B40>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0001BF30>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00033E40>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00034E50>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000356D0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003D560>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003D5D0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003D6F0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003D9A0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003D9F0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_0003E7A0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000412F0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00041550>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000415F0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000419C0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00041A00>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00041CA0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00041FD0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00043690>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000441C0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000443E0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00044CC0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00045550>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00045BA0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00046020>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00046870>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00046D30>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00046E20>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00048170>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000482D0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00048E60>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00050D20>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00053650>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00053740>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00053C00>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000EC580>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_001456E4>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000E9290>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00011C20>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00145BE2>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00082A10>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00082C50>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00067CE0>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00018130>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_000200B0>
     -Wl,--wrap=sc2_x87_sin
     -Wl,--wrap=sc2_x87_cos
     -Wl,--wrap=sc2_x87_atan2
-    -Wl,--wrap=recomp_memory
-    -Wl,--wrap=recomp_memory_u32_checked
-    -Wl,--wrap=recomp_guest_load
-    -Wl,--wrap=recomp_guest_store
-    -Wl,--wrap=recomp_guest_memcpy
-    -Wl,--wrap=recomp_guest_memset
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=recomp_memory>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=recomp_memory_u32_checked>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=recomp_guest_load>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=recomp_guest_store>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=recomp_guest_memcpy>
+    $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=recomp_guest_memset>
 )
 
 

@@ -52,8 +52,13 @@ bool Switch_D3dWorkerIsActive(void);
 
 bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *cmd);
 bool Switch_D3dWorkerEnqueueGatherDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *cmd, const SwitchGatherDrawJob *job);
+RecompD3dPresenterCommand *Switch_D3dWorkerBeginDraw(RecompD3dPresenter *presenter, uint32_t *out_slot, uint64_t *out_tq0, SwitchGatherDrawJob **out_gather);
+bool Switch_D3dWorkerCommitDraw(uint32_t slot, uint64_t tq0, bool is_gather, bool copy_vtx, uint32_t index_smallest);
 uint8_t *Switch_D3dWorkerAllocPushBytes(uint32_t bytes, uint32_t *out_offset);
+bool Switch_D3dWorkerIsInPushArena(const void *ptr);
 bool Switch_D3dWorkerEnqueuePushShadow(RecompD3dPresenter *presenter, const SwitchPushShadowJob *job);
+SwitchPushShadowJob *Switch_D3dWorkerBeginPushShadow(RecompD3dPresenter *presenter, uint32_t *out_slot, uint64_t *out_tq0);
+void Switch_D3dWorkerCommitPushShadow(uint32_t slot, uint64_t tq0);
 bool Switch_D3dWorkerEnqueueReleaseMemory(RecompD3dPresenter *presenter, uint32_t base, uint32_t size, bool is_release);
 void Switch_D3dWorkerFlush(void);
 void Switch_D3dWorkerEndFrame(void);

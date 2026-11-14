@@ -93,6 +93,15 @@ struct PerfStats {
     uint32_t slow_frames = 0; // wall > 20 ms
     uint32_t max_draws = 0;
     uint64_t dyn_bytes = 0;
+    uint32_t hist_16_75 = 0, hist_16_95 = 0, hist_20 = 0, hist_33 = 0, hist_50 = 0, hist_gt50 = 0;
+    uint64_t prev_t_backend = 0, prev_t_vtx = 0, prev_t_tex = 0, prev_t_audio_pump = 0;
+    uint64_t prev_t_fence = 0, prev_t_acquire = 0, prev_t_draw_total = 0;
+    struct PresHitchRec {
+        uint32_t frame;
+        double wall_ms, guest_ms, back_ms, draw_ms, vtx_ms, tex_ms, aud_ms, wait_ms;
+        uint32_t draws, tex_up, dyn_kb;
+    } pending_hitches[5] = {};
+    uint32_t hitches_logged = 0;
 
     // Hardware GPU timestamp counters
     uint64_t gpu_cat_ns[GPU_CAT_COUNT] = {};
@@ -148,9 +157,11 @@ static void pumpAudioIfDue(void) {
 #define DESC_BUF_SIZE (256 * 1024)
 #define TEX_POOL_SIZE (160 * 1024 * 1024)
 
-#define MAX_IMAGE_DESCS 2048
+#define MAX_IMAGE_DESCS 2080
 #define MAX_SAMPLER_DESCS 32
 #define MAX_TEX_CACHE 2048
+#define MAX_GPU_COPIES 16
+#define GPU_COPY_POOL_SIZE (24 * 1024 * 1024)
 #define TEX_HASH_BUCKETS 4096
 #define PALETTE_BYTES 1024u
 
@@ -383,6 +394,24 @@ struct RecompD3dPresenter {
     DkImage white_image;
     DkImageView white_view;
 
+    // GPU-side render-target / backbuffer copy pool (for CopyRects / CopyMainColor / backbuffer sampling)
+    struct GpuCopySlot {
+        bool used;
+        uint32_t data;
+        uint32_t width;
+        uint32_t height;
+        DkImage image;
+        DkImageView view;
+        uint32_t desc_slot;
+    };
+    DkMemBlock block_gpu_copies;
+    uint32_t gpu_copy_pool_offset;
+    GpuCopySlot gpu_copies[MAX_GPU_COPIES];
+    uint32_t next_gpu_copy_slot;
+    DkImage backbuffer_snap_image;
+    DkImageView backbuffer_snap_view;
+    int last_presented_slot;
+
     // Dynamic vertex/index/uniform/staging buffer ring (double-buffered)
     DkMemBlock block_dyn[NUM_CMD_SLOTS];
     uint8_t *dyn_cpu[NUM_CMD_SLOTS];
@@ -558,6 +587,95 @@ static inline uint64_t quickFingerprint(const void *bytes, uint32_t size) {
     return h;
 }
 
+static RecompD3dPresenter::GpuCopySlot *getOrAllocGpuCopy(
+    RecompD3dPresenter *p, uint32_t data, uint32_t w, uint32_t h)
+{
+    if (w == 0 || h == 0 || w > 2048 || h > 2048) return nullptr;
+    for (uint32_t i = 0; i < MAX_GPU_COPIES; ++i) {
+        if (p->gpu_copies[i].used && p->gpu_copies[i].data == data &&
+            p->gpu_copies[i].width == w && p->gpu_copies[i].height == h) {
+            return &p->gpu_copies[i];
+        }
+    }
+
+    DkImageLayoutMaker lm;
+    dkImageLayoutMakerDefaults(&lm, p->device);
+    lm.flags = DkImageFlags_Usage2DEngine | DkImageFlags_UsageRender;
+    lm.format = DkImageFormat_RGBA8_Unorm;
+    lm.dimensions[0] = w;
+    lm.dimensions[1] = h;
+    DkImageLayout layout;
+    dkImageLayoutInitialize(&layout, &lm);
+    uint32_t img_size = (uint32_t)dkImageLayoutGetSize(&layout);
+    uint32_t img_align = dkImageLayoutGetAlignment(&layout);
+
+    uint32_t off = (p->gpu_copy_pool_offset + img_align - 1) & ~(img_align - 1);
+    if (off + img_size > GPU_COPY_POOL_SIZE) {
+        // Reset pool after snap image (keep slot 0..snap_end)
+        DkImageLayoutMaker slm;
+        dkImageLayoutMakerDefaults(&slm, p->device);
+        slm.flags = DkImageFlags_Usage2DEngine | DkImageFlags_UsageRender;
+        slm.format = DkImageFormat_RGBA8_Unorm;
+        slm.dimensions[0] = p->width;
+        slm.dimensions[1] = p->height;
+        DkImageLayout slayout;
+        dkImageLayoutInitialize(&slayout, &slm);
+        uint32_t ssize = (uint32_t)dkImageLayoutGetSize(&slayout);
+        uint32_t salign = dkImageLayoutGetAlignment(&slayout);
+        p->gpu_copy_pool_offset = (ssize + salign - 1) & ~(salign - 1);
+        for (uint32_t i = 0; i < MAX_GPU_COPIES; ++i) p->gpu_copies[i].used = false;
+        off = (p->gpu_copy_pool_offset + img_align - 1) & ~(img_align - 1);
+        if (off + img_size > GPU_COPY_POOL_SIZE) return nullptr;
+    }
+
+    uint32_t slot_idx = p->next_gpu_copy_slot;
+    p->next_gpu_copy_slot = (p->next_gpu_copy_slot + 1) % MAX_GPU_COPIES;
+
+    RecompD3dPresenter::GpuCopySlot &c = p->gpu_copies[slot_idx];
+    c.used = true;
+    c.data = data;
+    c.width = w;
+    c.height = h;
+    c.desc_slot = MAX_TEX_CACHE + 2 + slot_idx;
+    p->gpu_copy_pool_offset = off + img_size;
+
+    dkImageInitialize(&c.image, &layout, p->block_gpu_copies, off);
+    dkImageViewDefaults(&c.view, &c.image);
+    dkImageDescriptorInitialize(&p->img_descs_cpu[c.desc_slot], &c.view, false, false);
+    return &c;
+}
+
+static inline uint32_t lookupGpuCopySlot(const RecompD3dPresenter *p, uint32_t data, uint32_t w, uint32_t h) {
+    for (uint32_t i = 0; i < MAX_GPU_COPIES; ++i) {
+        if (p->gpu_copies[i].used && p->gpu_copies[i].data == data &&
+            p->gpu_copies[i].width == w && p->gpu_copies[i].height == h) {
+            return p->gpu_copies[i].desc_slot;
+        }
+    }
+    return 0;
+}
+
+static inline bool isPow2U32(uint32_t v) { return v != 0u && (v & (v - 1u)) == 0u; }
+
+static void buildMortonLUT(uint32_t width, uint32_t height, uint32_t mx[2048], uint32_t my[2048]) {
+    uint32_t mask_x = 0u, mask_y = 0u, bit = 1u, slot = 1u;
+    while (bit < width || bit < height) {
+        if (bit < width)  { mask_x |= slot; slot <<= 1u; }
+        if (bit < height) { mask_y |= slot; slot <<= 1u; }
+        bit <<= 1u;
+    }
+    uint32_t vx = 0u;
+    for (uint32_t x = 0u; x < width; ++x) {
+        mx[x] = vx;
+        vx = (vx - mask_x) & mask_x;
+    }
+    uint32_t vy = 0u;
+    for (uint32_t y = 0u; y < height; ++y) {
+        my[y] = vy;
+        vy = (vy - mask_y) & mask_y;
+    }
+}
+
 static uint32_t lookupOrUploadSingleTexture(
     RecompD3dPresenter *p,
     const RecompD3dTextureDesc &desc,
@@ -581,6 +699,7 @@ static uint32_t lookupOrUploadSingleTexture(
     const bool dxt5 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_DXT5);
     const bool compressed = (dxt1 || dxt3 || dxt5);
 
+    uint64_t t_tex_start = perfNow();
     uint64_t fp = quickFingerprint(tex_bytes, tex_byte_count);
     uint32_t h = hashGuestDataAddr(desc.data);
     for (int idx = p->tex_hash_head[h]; idx != -1; idx = p->tex_cache[idx].hash_next) {
@@ -592,6 +711,7 @@ static uint32_t lookupOrUploadSingleTexture(
             }
         }
     }
+    uint64_t t_tex_decode_start = perfNow();
 
     uint32_t slot = p->cur_cmd_slot;
     DkCmdBuf cmd = p->cmdbuf[slot];
@@ -685,13 +805,26 @@ static uint32_t lookupOrUploadSingleTexture(
     uint8_t *dst_bgra = dyn_cpu + stage_offset;
 
     if (palettized) {
-        if (texels > tex_byte_count) return 0;
-        std::vector<uint8_t> indices(texels);
-        if (!recomp_d3d_texture_unswizzle((const uint8_t *)tex_bytes, indices.data(), desc.width, desc.height, 1u))
-            return 0;
-        const uint8_t *pal = (const uint8_t *)pal_bytes;
-        for (size_t i = 0; i < texels; i++) {
-            memcpy(dst_bgra + i * 4u, pal + indices[i] * 4u, 4u);
+        if (texels > tex_byte_count || !isPow2U32(desc.width) || !isPow2U32(desc.height)) return 0;
+        uint32_t mx[2048], my[2048];
+        buildMortonLUT(desc.width, desc.height, mx, my);
+        const uint8_t *src8 = (const uint8_t *)tex_bytes;
+        const uint32_t *pal32 = (const uint32_t *)pal_bytes;
+        uint32_t *dst32 = (uint32_t *)dst_bgra;
+        const uint32_t w = desc.width;
+        for (uint32_t y = 0u; y < desc.height; ++y) {
+            const uint32_t by = my[y];
+            uint32_t *row = dst32 + (size_t)y * w;
+            uint32_t x = 0u;
+            for (; x + 4u <= w; x += 4u) {
+                row[x + 0u] = pal32[src8[by | mx[x + 0u]]];
+                row[x + 1u] = pal32[src8[by | mx[x + 1u]]];
+                row[x + 2u] = pal32[src8[by | mx[x + 2u]]];
+                row[x + 3u] = pal32[src8[by | mx[x + 3u]]];
+            }
+            for (; x < w; ++x) {
+                row[x] = pal32[src8[by | mx[x]]];
+            }
         }
     } else if (fmt == 0x12u || fmt == 0x1eu) { // Linear BGRA8 / BGRX8
         uint32_t pitch = desc.pitch ? desc.pitch : (desc.width * 4u);
@@ -700,69 +833,84 @@ static uint32_t lookupOrUploadSingleTexture(
             uint8_t *row = dst_bgra + (size_t)y * desc.width * 4u;
             memcpy(row, (const uint8_t *)tex_bytes + (size_t)y * pitch, desc.width * 4u);
             if (fmt == 0x1eu) {
-                for (uint32_t x = 0; x < desc.width; x++) row[x * 4u + 3u] = 0xFF;
+                uint32_t *row32 = (uint32_t *)row;
+                for (uint32_t x = 0; x < desc.width; x++) row32[x] |= 0xFF000000u;
             }
         }
     } else if (fmt == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 || fmt == 0x07u) { // Swizzled BGRA8 / BGRX8
-        if (texels * 4u > tex_byte_count) return 0;
-        if (!recomp_d3d_texture_unswizzle((const uint8_t *)tex_bytes, dst_bgra, desc.width, desc.height, 4u))
-            return 0;
-        if (fmt == 0x07u) {
-            for (size_t i = 0; i < texels; i++) dst_bgra[i * 4u + 3u] = 0xFF;
+        if (texels * 4u > tex_byte_count || !isPow2U32(desc.width) || !isPow2U32(desc.height)) return 0;
+        uint32_t mx[2048], my[2048];
+        buildMortonLUT(desc.width, desc.height, mx, my);
+        const uint32_t *src32 = (const uint32_t *)tex_bytes;
+        uint32_t *dst32 = (uint32_t *)dst_bgra;
+        const uint32_t or_mask = (fmt == 0x07u) ? 0xFF000000u : 0u;
+        const uint32_t w = desc.width;
+        for (uint32_t y = 0u; y < desc.height; ++y) {
+            const uint32_t by = my[y];
+            uint32_t *row = dst32 + (size_t)y * w;
+            for (uint32_t x = 0u; x < w; ++x) {
+                row[x] = src32[by | mx[x]] | or_mask;
+            }
         }
     } else if (fmt == RECOMP_D3D_TEXTURE_FORMAT_A8 || fmt == 0x00u) { // Swizzled A8 or L8
-        if (texels > tex_byte_count) return 0;
-        std::vector<uint8_t> unsw(texels);
-        if (!recomp_d3d_texture_unswizzle((const uint8_t *)tex_bytes, unsw.data(), desc.width, desc.height, 1u))
-            return 0;
-        for (size_t i = 0; i < texels; i++) {
-            uint8_t v = unsw[i];
-            if (fmt == RECOMP_D3D_TEXTURE_FORMAT_A8) {
-                dst_bgra[i * 4u + 0] = 0xFF;
-                dst_bgra[i * 4u + 1] = 0xFF;
-                dst_bgra[i * 4u + 2] = 0xFF;
-                dst_bgra[i * 4u + 3] = v;
-            } else {
-                dst_bgra[i * 4u + 0] = v;
-                dst_bgra[i * 4u + 1] = v;
-                dst_bgra[i * 4u + 2] = v;
-                dst_bgra[i * 4u + 3] = 0xFF;
+        if (texels > tex_byte_count || !isPow2U32(desc.width) || !isPow2U32(desc.height)) return 0;
+        uint32_t mx[2048], my[2048];
+        buildMortonLUT(desc.width, desc.height, mx, my);
+        const uint8_t *src8 = (const uint8_t *)tex_bytes;
+        uint32_t *dst32 = (uint32_t *)dst_bgra;
+        const uint32_t w = desc.width;
+        const bool is_a8 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_A8);
+        for (uint32_t y = 0u; y < desc.height; ++y) {
+            const uint32_t by = my[y];
+            uint32_t *row = dst32 + (size_t)y * w;
+            for (uint32_t x = 0u; x < w; ++x) {
+                uint32_t v = src8[by | mx[x]];
+                row[x] = is_a8 ? (0x00FFFFFFu | (v << 24)) : (0xFF000000u | (v * 0x010101u));
             }
         }
     } else if (fmt == 0x01u || fmt == 0x02u || fmt == 0x03u || fmt == 0x04u || fmt == 0x05u || fmt == 0x1Au) {
         // Swizzled 16-bit formats (AL88, ARGB1555, XRGB1555, ARGB4444, RGB565)
-        if (texels * 2u > tex_byte_count) return 0;
-        std::vector<uint16_t> unsw(texels);
-        if (!recomp_d3d_texture_unswizzle((const uint8_t *)tex_bytes, reinterpret_cast<uint8_t*>(unsw.data()), desc.width, desc.height, 2u))
-            return 0;
-        for (size_t i = 0; i < texels; i++) {
-            uint16_t c = unsw[i];
-            uint8_t *p_out = dst_bgra + i * 4u;
-            if (fmt == 0x01u || fmt == 0x1Au) { // A8L8
-                uint8_t l = (uint8_t)(c & 0xFF);
-                uint8_t a = (uint8_t)(c >> 8);
-                p_out[0] = l; p_out[1] = l; p_out[2] = l; p_out[3] = a;
-            } else if (fmt == 0x02u || fmt == 0x03u) { // ARGB1555 / XRGB1555
-                p_out[0] = (uint8_t)(((c & 0x1F) * 255) / 31);
-                p_out[1] = (uint8_t)((((c >> 5) & 0x1F) * 255) / 31);
-                p_out[2] = (uint8_t)((((c >> 10) & 0x1F) * 255) / 31);
-                p_out[3] = (fmt == 0x02u) ? ((c & 0x8000) ? 255 : 0) : 255;
-            } else if (fmt == 0x04u) { // ARGB4444
-                p_out[0] = (uint8_t)((c & 0xF) * 17);
-                p_out[1] = (uint8_t)(((c >> 4) & 0xF) * 17);
-                p_out[2] = (uint8_t)(((c >> 8) & 0xF) * 17);
-                p_out[3] = (uint8_t)(((c >> 12) & 0xF) * 17);
-            } else { // RGB565
-                p_out[0] = (uint8_t)(((c & 0x1F) * 255) / 31);
-                p_out[1] = (uint8_t)((((c >> 5) & 0x3F) * 255) / 63);
-                p_out[2] = (uint8_t)((((c >> 11) & 0x1F) * 255) / 31);
-                p_out[3] = 255;
+        if (texels * 2u > tex_byte_count || !isPow2U32(desc.width) || !isPow2U32(desc.height)) return 0;
+        uint32_t mx[2048], my[2048];
+        buildMortonLUT(desc.width, desc.height, mx, my);
+        const uint16_t *src16 = (const uint16_t *)tex_bytes;
+        uint32_t *dst32 = (uint32_t *)dst_bgra;
+        const uint32_t w = desc.width;
+        for (uint32_t y = 0u; y < desc.height; ++y) {
+            const uint32_t by = my[y];
+            uint32_t *row = dst32 + (size_t)y * w;
+            for (uint32_t x = 0u; x < w; ++x) {
+                uint16_t c = src16[by | mx[x]];
+                uint32_t r, g, b, a;
+                if (fmt == 0x01u || fmt == 0x1Au) { // A8L8
+                    uint32_t l = (uint32_t)(c & 0xFFu);
+                    a = (uint32_t)(c >> 8);
+                    row[x] = (a << 24) | (l * 0x010101u);
+                } else if (fmt == 0x02u || fmt == 0x03u) { // ARGB1555 / XRGB1555
+                    b = ((c & 0x1Fu) * 255u) / 31u;
+                    g = (((c >> 5) & 0x1Fu) * 255u) / 31u;
+                    r = (((c >> 10) & 0x1Fu) * 255u) / 31u;
+                    a = (fmt == 0x02u) ? ((c & 0x8000u) ? 255u : 0u) : 255u;
+                    row[x] = (a << 24) | (r << 16) | (g << 8) | b;
+                } else if (fmt == 0x04u) { // ARGB4444
+                    b = (c & 0xFu) * 17u;
+                    g = ((c >> 4) & 0xFu) * 17u;
+                    r = ((c >> 8) & 0xFu) * 17u;
+                    a = ((c >> 12) & 0xFu) * 17u;
+                    row[x] = (a << 24) | (r << 16) | (g << 8) | b;
+                } else { // RGB565
+                    b = ((c & 0x1Fu) * 255u) / 31u;
+                    g = (((c >> 5) & 0x3Fu) * 255u) / 63u;
+                    r = (((c >> 11) & 0x1Fu) * 255u) / 31u;
+                    row[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+                }
             }
         }
     } else {
         return 0;
     }
 
+    uint64_t t_tex_decode_end = perfNow();
     p->dyn_offset += (upload_size + 255u) & ~255u;
 
     DkImageLayoutMaker lm;
@@ -812,6 +960,17 @@ static uint32_t lookupOrUploadSingleTexture(
     dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
     p->tex_uploads_in_frame++;
+    {
+        uint64_t t_tex_end = perfNow();
+        double total_ms = perfMs(t_tex_end - t_tex_start);
+        if (total_ms > 2.0) {
+            printf("[TexSlow] fmt=0x%02x %ux%u bytes=%u total=%.2fms (hash=%.2f decode=%.2f dk=%.2f)\n",
+                   fmt, desc.width, desc.height, tex_byte_count, total_ms,
+                   perfMs(t_tex_decode_start - t_tex_start),
+                   perfMs(t_tex_decode_end - t_tex_decode_start),
+                   perfMs(t_tex_end - t_tex_decode_end));
+        }
+    }
     return ct.desc_slot;
 }
 
@@ -1194,7 +1353,7 @@ RecompD3dPresenterError d3d_backend_create(
     // 4. Calculate Framebuffer Layout and Allocate Color Targets
     DkImageLayoutMaker imageLayoutMaker;
     dkImageLayoutMakerDefaults(&imageLayoutMaker, p->device);
-    imageLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression;
+    imageLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression;
     imageLayoutMaker.format = DkImageFormat_RGBA8_Unorm;
     imageLayoutMaker.dimensions[0] = p->width;
     imageLayoutMaker.dimensions[1] = p->height;
@@ -1371,6 +1530,32 @@ RecompD3dPresenterError d3d_backend_create(
         dkQueueWaitIdle(p->queue);
         dkCmdBufClear(p->cmdbuf[0]);
         dkCmdBufAddMemory(p->cmdbuf[0], p->block_cmd[0], 0, CMD_BUF_SIZE);
+    }
+
+    // 8b. GPU Copy Pool (for CopyRects / CopyMainColor / backbuffer sampling)
+    {
+        DkMemBlockMaker gcMaker;
+        dkMemBlockMakerDefaults(&gcMaker, p->device, GPU_COPY_POOL_SIZE);
+        gcMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+        p->block_gpu_copies = dkMemBlockCreate(&gcMaker);
+
+        DkImageLayoutMaker slm;
+        dkImageLayoutMakerDefaults(&slm, p->device);
+        slm.flags = DkImageFlags_Usage2DEngine | DkImageFlags_UsageRender;
+        slm.format = DkImageFormat_RGBA8_Unorm;
+        slm.dimensions[0] = p->width;
+        slm.dimensions[1] = p->height;
+        DkImageLayout slayout;
+        dkImageLayoutInitialize(&slayout, &slm);
+        uint32_t ssize = (uint32_t)dkImageLayoutGetSize(&slayout);
+        uint32_t salign = dkImageLayoutGetAlignment(&slayout);
+        p->gpu_copy_pool_offset = (ssize + salign - 1) & ~(salign - 1);
+        dkImageInitialize(&p->backbuffer_snap_image, &slayout, p->block_gpu_copies, 0);
+        dkImageViewDefaults(&p->backbuffer_snap_view, &p->backbuffer_snap_image);
+        dkImageDescriptorInitialize(&p->img_descs_cpu[MAX_TEX_CACHE + 1], &p->backbuffer_snap_view, false, false);
+        p->last_presented_slot = -1;
+        p->next_gpu_copy_slot = 0;
+        memset(p->gpu_copies, 0, sizeof(p->gpu_copies));
     }
 
     // 9. Swapchain (double-buffered, lazy image acquisition per frame)
@@ -1717,6 +1902,35 @@ RecompD3dPresenterError d3d_backend_submit(
 
         // Lookup/upload stage textures 0..2
         uint64_t perf_tex_t0 = perfNow();
+        auto resolveDrawTex = [&](const RecompD3dTextureDesc &desc, const void *bytes, uint32_t byte_count,
+                                  const void *pal, uint32_t pal_count, bool force_white,
+                                  bool is_backbuffer, bool is_front_buffer) -> uint32_t {
+            if (force_white) return 0;
+            if (is_front_buffer && presenter->last_presented_slot >= 0) {
+                uint32_t cslot = presenter->cur_cmd_slot;
+                DkCmdBuf ccmd = presenter->cmdbuf[cslot];
+                DkImageRect rect = { 0, 0, 0, presenter->width, presenter->height, 1 };
+                dkCmdBufBarrier(ccmd, DkBarrier_Full, DkInvalidateFlags_Image);
+                dkCmdBufBlitImage(ccmd, &presenter->framebuffer_views[presenter->last_presented_slot], &rect,
+                                  &presenter->backbuffer_snap_view, &rect, DkBlitFlag_FilterNearest, 0);
+                dkCmdBufBarrier(ccmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+                return MAX_TEX_CACHE + 1;
+            }
+            if (is_backbuffer && presenter->current_slot >= 0) {
+                uint32_t cslot = presenter->cur_cmd_slot;
+                DkCmdBuf ccmd = presenter->cmdbuf[cslot];
+                DkImageRect rect = { 0, 0, 0, presenter->width, presenter->height, 1 };
+                dkCmdBufBarrier(ccmd, DkBarrier_Full, DkInvalidateFlags_Image);
+                dkCmdBufBlitImage(ccmd, &presenter->framebuffer_views[presenter->current_slot], &rect,
+                                  &presenter->backbuffer_snap_view, &rect, DkBlitFlag_FilterNearest, 0);
+                dkCmdBufBarrier(ccmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+                return MAX_TEX_CACHE + 1;
+            }
+            uint32_t gpu_slot = lookupGpuCopySlot(presenter, desc.data, desc.width, desc.height);
+            if (gpu_slot != 0) return gpu_slot;
+            return lookupOrUploadSingleTexture(presenter, desc, bytes, byte_count, pal, pal_count, false);
+        };
+
         uint32_t tex_handles[3] = {};
         if (draw.pixel_program.kind != RECOMP_D3D_PIXEL_NONE) {
             for (uint32_t s = 0; s < 3u; ++s) {
@@ -1725,12 +1939,14 @@ RecompD3dPresenterError d3d_backend_submit(
                 const auto &st_tex = draw.stage_textures[s];
                 if (draw.pixel_program.stages[s].sampled) {
                     if (st_tex.bytes && st_tex.byte_count > 0) {
-                        tslot = lookupOrUploadSingleTexture(presenter, st_tex.desc, st_tex.bytes, st_tex.byte_count,
-                                                            st_tex.palette, st_tex.palette_byte_count, st_tex.white);
+                        tslot = resolveDrawTex(st_tex.desc, st_tex.bytes, st_tex.byte_count,
+                                               st_tex.palette, st_tex.palette_byte_count, st_tex.white,
+                                               s == 0 && draw.texture_is_backbuffer, s == 0 && draw.texture_is_front_buffer);
                         smp_id = addrCode(st_tex.address_u) | (addrCode(st_tex.address_v) << 2u);
-                    } else if (s == 0 && draw.has_texture && draw.texture_bytes) {
-                        tslot = lookupOrUploadSingleTexture(presenter, draw.texture, draw.texture_bytes, draw.texture_byte_count,
-                                                            draw.palette_bytes, draw.palette_byte_count, false);
+                    } else if (s == 0 && draw.has_texture && (draw.texture_bytes || draw.texture_is_backbuffer || draw.texture_is_front_buffer)) {
+                        tslot = resolveDrawTex(draw.texture, draw.texture_bytes, draw.texture_byte_count,
+                                               draw.palette_bytes, draw.palette_byte_count, false,
+                                               draw.texture_is_backbuffer, draw.texture_is_front_buffer);
                         smp_id = addrCode(draw.address_u) | (addrCode(draw.address_v) << 2u);
                     }
                 }
@@ -1739,9 +1955,10 @@ RecompD3dPresenterError d3d_backend_submit(
         } else {
             uint32_t tslot = 0;
             uint32_t smp_id = 0;
-            if (draw.has_texture && draw.texture_bytes) {
-                tslot = lookupOrUploadSingleTexture(presenter, draw.texture, draw.texture_bytes, draw.texture_byte_count,
-                                                    draw.palette_bytes, draw.palette_byte_count, false);
+            if (draw.has_texture && (draw.texture_bytes || draw.texture_is_backbuffer || draw.texture_is_front_buffer)) {
+                tslot = resolveDrawTex(draw.texture, draw.texture_bytes, draw.texture_byte_count,
+                                       draw.palette_bytes, draw.palette_byte_count, false,
+                                       draw.texture_is_backbuffer, draw.texture_is_front_buffer);
                 smp_id = addrCode(draw.address_u) | (addrCode(draw.address_v) << 2u);
             }
             tex_handles[0] = dkMakeTextureHandle(tslot, smp_id);
@@ -2477,6 +2694,51 @@ RecompD3dPresenterError d3d_backend_submit(
             dkCmdBufReportCounter(cmd, DkCounter_Timestamp, presenter->queries_gpu[slot] + q * sizeof(GpuQueryReport));
             presenter->query_count[slot] = q + 1;
         }
+    } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_MAIN_COLOR) {
+        if (!beginFrameIfNeeded(presenter)) return RECOMP_D3D_PRESENTER_CLOSED;
+        const auto &dest = command->data.copy_destination;
+        RecompD3dPresenter::GpuCopySlot *dst = getOrAllocGpuCopy(presenter, dest.data, dest.width, dest.height);
+        if (dst && presenter->current_slot >= 0) {
+            uint32_t slot = presenter->cur_cmd_slot;
+            DkCmdBuf cmd = presenter->cmdbuf[slot];
+            DkImageRect srcRect = { 0, 0, 0, presenter->width, presenter->height, 1 };
+            DkImageRect dstRect = { 0, 0, 0, dst->width, dst->height, 1 };
+            dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+            dkCmdBufBlitImage(cmd, &presenter->framebuffer_views[presenter->current_slot], &srcRect,
+                              &dst->view, &dstRect, DkBlitFlag_FilterLinear, 0);
+            dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+        }
+    } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_RECT) {
+        if (!beginFrameIfNeeded(presenter)) return RECOMP_D3D_PRESENTER_CLOSED;
+        const auto &cr = command->data.copy_rect;
+        int src_slot = cr.from_previous_frame ? presenter->last_presented_slot : presenter->current_slot;
+        RecompD3dPresenter::GpuCopySlot *dst = getOrAllocGpuCopy(presenter, cr.destination.data, cr.destination.width, cr.destination.height);
+        if (dst && src_slot >= 0) {
+            int32_t l = cr.source[0] < 0 ? 0 : cr.source[0];
+            int32_t t = cr.source[1] < 0 ? 0 : cr.source[1];
+            int32_t r = cr.source[2] > (int32_t)presenter->guest_width ? (int32_t)presenter->guest_width : cr.source[2];
+            int32_t b = cr.source[3] > (int32_t)presenter->guest_height ? (int32_t)presenter->guest_height : cr.source[3];
+            uint32_t dx = cr.point[0] < 0 ? 0u : (uint32_t)cr.point[0];
+            uint32_t dy = cr.point[1] < 0 ? 0u : (uint32_t)cr.point[1];
+            if (r > l && b > t && dx < dst->width && dy < dst->height) {
+                uint32_t dw = (uint32_t)(r - l);
+                uint32_t dh = (uint32_t)(b - t);
+                if (dx + dw > dst->width) dw = dst->width - dx;
+                if (dy + dh > dst->height) dh = dst->height - dy;
+                uint32_t sx = (uint32_t)l * presenter->width / presenter->guest_width;
+                uint32_t sy = (uint32_t)t * presenter->height / presenter->guest_height;
+                uint32_t sw = (uint32_t)(r - l) * presenter->width / presenter->guest_width;
+                uint32_t sh = (uint32_t)(b - t) * presenter->height / presenter->guest_height;
+                uint32_t slot = presenter->cur_cmd_slot;
+                DkCmdBuf cmd = presenter->cmdbuf[slot];
+                DkImageRect srcRect = { sx, sy, 0, sw, sh, 1 };
+                DkImageRect dstRect = { dx, dy, 0, dw, dh, 1 };
+                dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+                dkCmdBufBlitImage(cmd, &presenter->framebuffer_views[src_slot], &srcRect,
+                                  &dst->view, &dstRect, DkBlitFlag_FilterLinear, 0);
+                dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+            }
+        }
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT) {
         if (presenter->current_slot < 0) {
             // Nothing was cleared or drawn this frame (e.g. skipped logos / waiting for scene load).
@@ -2527,18 +2789,56 @@ RecompD3dPresenterError d3d_backend_submit(
         DkCmdList cmdList = dkCmdBufFinishList(cmd);
         dkQueueSubmitCommands(presenter->queue, cmdList);
         dkQueuePresentImage(presenter->queue, presenter->swapchain, presenter->current_slot);
+        presenter->last_presented_slot = presenter->current_slot;
         presenter->current_slot = -1;
         presenter->cur_cmd_slot = (slot + 1) % NUM_CMD_SLOTS;
 
         presenter->frame_counter++;
         Switch_NotifyActivity(presenter->frame_counter);
         {
+            static uint32_t s_total_pres_hitches = 0;
             uint64_t now = perfNow();
+            uint64_t d_back = g_perf.t_backend - g_perf.prev_t_backend;
+            uint64_t d_vtx = g_perf.t_vtx - g_perf.prev_t_vtx;
+            uint64_t d_tex = g_perf.t_tex - g_perf.prev_t_tex;
+            uint64_t d_aud = g_perf.t_audio_pump - g_perf.prev_t_audio_pump;
+            uint64_t d_wait = (g_perf.t_fence - g_perf.prev_t_fence) + (g_perf.t_acquire - g_perf.prev_t_acquire);
+            uint64_t d_draw = g_perf.t_draw_total - g_perf.prev_t_draw_total;
+            g_perf.prev_t_backend = g_perf.t_backend;
+            g_perf.prev_t_vtx = g_perf.t_vtx;
+            g_perf.prev_t_tex = g_perf.t_tex;
+            g_perf.prev_t_audio_pump = g_perf.t_audio_pump;
+            g_perf.prev_t_fence = g_perf.t_fence;
+            g_perf.prev_t_acquire = g_perf.t_acquire;
+            g_perf.prev_t_draw_total = g_perf.t_draw_total;
             if (g_perf.last_present) {
                 uint64_t wall = now - g_perf.last_present;
                 g_perf.wall_sum += wall;
                 if (wall > g_perf.wall_max) g_perf.wall_max = wall;
                 if (wall > 20u * 19200u) ++g_perf.slow_frames;
+                if (wall <= 325440ULL) ++g_perf.hist_16_95;
+                if (wall <= 321600ULL) ++g_perf.hist_16_75;
+                else if (wall <= 384000ULL) ++g_perf.hist_20;
+                else if (wall <= 641280ULL) ++g_perf.hist_33;
+                else if (wall <= 960000ULL) ++g_perf.hist_50;
+                else ++g_perf.hist_gt50;
+                if (wall > 384000ULL && presenter->draws_in_frame >= 100u &&
+                    g_perf.hitches_logged < 5u && s_total_pres_hitches < 50u) {
+                    auto& hr = g_perf.pending_hitches[g_perf.hitches_logged++];
+                    ++s_total_pres_hitches;
+                    hr.frame = presenter->frame_counter;
+                    hr.wall_ms = perfMs(wall);
+                    hr.back_ms = perfMs(d_back);
+                    hr.guest_ms = (wall > d_back) ? perfMs(wall - d_back) : 0.0;
+                    hr.draw_ms = perfMs(d_draw);
+                    hr.vtx_ms = perfMs(d_vtx);
+                    hr.tex_ms = perfMs(d_tex);
+                    hr.aud_ms = perfMs(d_aud);
+                    hr.wait_ms = perfMs(d_wait);
+                    hr.draws = presenter->draws_in_frame;
+                    hr.tex_up = presenter->tex_uploads_in_frame;
+                    hr.dyn_kb = presenter->dyn_offset / 1024u;
+                }
             }
             g_perf.last_present = now;
             ++g_perf.frames;
@@ -2557,6 +2857,18 @@ RecompD3dPresenterError d3d_backend_submit(
                 SwitchAudio_TakePerf(&au_up, &au_sub, &au_flush, &au_nup, &au_nsub);
                 printf("[Perf] fps=%.1f wall_avg=%.2fms wall_max=%.2fms slow(>20ms)=%u/%u\n",
                        1000.0 / wall_avg, wall_avg, perfMs(g_perf.wall_max), g_perf.slow_frames, g_perf.frames);
+                uint32_t hist_total = g_perf.hist_16_75 + g_perf.hist_20 + g_perf.hist_33 + g_perf.hist_50 + g_perf.hist_gt50;
+                double pct_59 = (hist_total > 0u) ? (100.0 * (double)g_perf.hist_16_95 / (double)hist_total) : 0.0;
+                printf("[Perf] frame_hist: <=16.75ms=%u <=16.95ms(59+fps)=%u(%.1f%%) 16.75-20ms=%u 20-33.4ms=%u 33.4-50ms=%u >50ms=%u\n",
+                       g_perf.hist_16_75, g_perf.hist_16_95, pct_59,
+                       g_perf.hist_20, g_perf.hist_33, g_perf.hist_50, g_perf.hist_gt50);
+                for (uint32_t hi = 0; hi < g_perf.hitches_logged; ++hi) {
+                    const auto& hr = g_perf.pending_hitches[hi];
+                    printf("[Hitch-Pres] frame=%u wall=%.2fms (guest_net=%.2fms backend=%.2fms [draw=%.2f vtx=%.2f tex=%.2f aud=%.2f wait=%.2f]) draws=%u tex_up=%u dyn_kb=%u\n",
+                           hr.frame, hr.wall_ms, hr.guest_ms, hr.back_ms,
+                           hr.draw_ms, hr.vtx_ms, hr.tex_ms, hr.aud_ms, hr.wait_ms,
+                           hr.draws, hr.tex_up, hr.dyn_kb);
+                }
                 printf("[Perf] per-frame ms: guest_cpu(wall)=%.2f backend=%.2f [vtx_cpu=%.2f tex=%.2f audio_pump=%.2f "
                        "gpu_fence_wait=%.2f vsync_acquire=%.2f draw_total=%.2f present=%.2f]\n",
                        guest, backend, perfMs(g_perf.t_vtx) / n, perfMs(g_perf.t_tex) / n,
@@ -2601,7 +2913,7 @@ RecompD3dPresenterError d3d_backend_submit(
                 double present_wait_ms = perfMs(g_pres_wait) / n;
                 double lookup_ms = perfMs(g_lookup_t) / n;
                 double x87_ms = perfMs(g_x87_t) / n;
-                double total_d3d8_guest_ms = d3d8_draw_ms + d3d8_shadow_ms + d3d8_sub_ms;
+                double total_d3d8_guest_ms = d3d8_draw_ms + d3d8_shadow_ms;
                 double pure_logic_ms = guest - (dsound_pump_ms + total_d3d8_guest_ms + vblank_wait_ms + present_wait_ms);
                 if (pure_logic_ms < 0.0) pure_logic_ms = 0.0;
                 printf("[Perf] guest_cpu detailed breakdown: guest=%.2fms [pure_game=%.2fms d3d8_total=%.2fms (regular_draws=%.0f:%.2fms, shadow_draws=%.0f:%.2fms, submit_copy=%.2fms) dsound=%.2fms (hrtf=%.2fms, calls=%u) vblank_wait=%.2fms (waits=%.1f) pres_wait=%.2fms]\n",
@@ -2762,6 +3074,7 @@ RecompD3dPresenterError d3d_backend_destroy(RecompD3dPresenter **presenter) {
         if (p->block_cmd[i]) dkMemBlockDestroy(p->block_cmd[i]);
     }
     if (p->block_queries) dkMemBlockDestroy(p->block_queries);
+    if (p->block_gpu_copies) dkMemBlockDestroy(p->block_gpu_copies);
     if (p->block_tex) dkMemBlockDestroy(p->block_tex);
     if (p->block_desc) dkMemBlockDestroy(p->block_desc);
     if (p->block_code) dkMemBlockDestroy(p->block_code);

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <atomic>
+#include <time.h>
 #include "runtime.h"
 
 extern "C" FILE* Switch_GetMainLogFile(void);
@@ -128,14 +129,65 @@ void __wrap_recomp_dispatch_indirect_site(uint32_t a, uint32_t e, const char *m,
     ++s_ind_calls;
     __real_recomp_dispatch_indirect_site(a, e, m, l);
 }
+static void sc2_phase0_report(void);
+
+// ---- PreDraw callee profiler (inclusive ticks via cntpct_el0) ----
+#define SC2_PREDRAW_PROF_LIST(X) \
+    X(0004B630) X(0004D090) X(00069370) \
+    X(0003EE30) X(000343A0) X(0003D9A0) X(0003D9F0) \
+    X(00046EA0) X(000423B0) X(0003FCF0) X(00042A80) \
+    X(00048780) X(00048C00) X(00041120) X(00041550) \
+    X(000496E0) X(00040670)
+
+struct PreDrawProfEntry {
+    const char *name;
+    uint64_t ticks;
+    uint32_t calls;
+};
+
+#define SC2_PD_DECL(fn) \
+    static PreDrawProfEntry s_pd_##fn = { "sub_" #fn, 0, 0 }; \
+    void __real_sub_##fn(void); \
+    void __wrap_sub_##fn(void) { \
+        uint64_t t0 = armGetSystemTick(); \
+        __real_sub_##fn(); \
+        s_pd_##fn.ticks += (armGetSystemTick() - t0); \
+        s_pd_##fn.calls++; \
+    }
+SC2_PREDRAW_PROF_LIST(SC2_PD_DECL)
+#undef SC2_PD_DECL
+
+static PreDrawProfEntry* const s_pd_entries[] = {
+#define SC2_PD_PTR(fn) &s_pd_##fn,
+SC2_PREDRAW_PROF_LIST(SC2_PD_PTR)
+#undef SC2_PD_PTR
+};
+
 static void sc2_phase0_report(void) {
     static uint32_t frames = 0;
     if (++frames < 120u) return;
     FILE *f = Switch_GetMainLogFile();
     if (f) {
+        double ticks_per_ms = (double)armGetSystemTickFreq() / 1000.0;
         fprintf(f, "[Phase0] per-frame: lookup_manual calls=%u (negcache-hits(NULL)=%u) indirect_calls=%u\n",
                 s_lk_calls / 120u, s_lk_null / 120u, s_ind_calls / 120u);
+        fprintf(f, "[ProfPreDraw] (120f avg):");
+        for (size_t i = 0; i < sizeof(s_pd_entries) / sizeof(s_pd_entries[0]); ++i) {
+            PreDrawProfEntry *e = s_pd_entries[i];
+            double ms = (double)e->ticks / (ticks_per_ms * 120.0);
+            if (e->calls > 0) {
+                fprintf(f, " %s=%.2fms(%u/f)", e->name + 4, ms, e->calls / 120u);
+            }
+            e->ticks = 0;
+            e->calls = 0;
+        }
+        fprintf(f, "\n");
         fflush(f);
+    } else {
+        for (size_t i = 0; i < sizeof(s_pd_entries) / sizeof(s_pd_entries[0]); ++i) {
+            s_pd_entries[i]->ticks = 0;
+            s_pd_entries[i]->calls = 0;
+        }
     }
     frames = 0; s_lk_calls = s_lk_null = s_ind_calls = 0;
 }
@@ -237,91 +289,7 @@ RecompFunction __wrap_recomp_d3d8_draw_lookup_manual(uint32_t address) {
     return fn;
 }
 
-// ---- Wrap recomp_memory, recomp_memory_u32_checked, and guest memory transfers ----
-extern uint8_t *recomp_fast_ram;
-uint8_t *__real_recomp_memory(uint32_t guest_address, size_t width);
-uint32_t *__real_recomp_memory_u32_checked(uint32_t guest_address);
-void __real_recomp_guest_load(void *destination, uint32_t source, size_t size);
-void __real_recomp_guest_store(uint32_t destination, const void *source, size_t size);
-void __real_recomp_guest_memcpy(uint32_t destination, uint32_t source, size_t size);
-void __real_recomp_guest_memset(uint32_t destination, int value, size_t size);
-
-static inline bool sc2_is_guest_ram(uint32_t guest_address, size_t width) {
-    // Exclude device MMIO (USB OHCI 0xfd000000..0xfdffffff and APU 0xfe800000..0xfeffffff)
-    if (guest_address >= 0xfd000000u && guest_address < 0xff000000u) {
-        return false;
-    }
-    uint32_t offset = guest_address & 0x03ffffffu;
-    return (offset + width) <= 0x04000000u;
-}
-
-static inline uint32_t sc2_normalize_guest_address(uint32_t guest_address) {
-    if (guest_address >= 0xfd000000u && guest_address < 0xff000000u) {
-        return guest_address;
-    }
-    return 0x80000000u | (guest_address & 0x03ffffffu);
-}
-
-uint8_t *__wrap_recomp_memory(uint32_t guest_address, size_t width) {
-    if (sc2_is_guest_ram(guest_address, width)) {
-        uint32_t offset = guest_address & 0x03ffffffu;
-        if (recomp_fast_ram != nullptr) {
-            return recomp_fast_ram + offset;
-        }
-        guest_address = 0x80000000u | offset;
-    }
-    return __real_recomp_memory(guest_address, width);
-}
-
-uint32_t *__wrap_recomp_memory_u32_checked(uint32_t guest_address) {
-    if (sc2_is_guest_ram(guest_address, 4u)) {
-        uint32_t offset = guest_address & 0x03ffffffu;
-        if (recomp_fast_ram != nullptr) {
-            return (uint32_t *)(void *)(recomp_fast_ram + offset);
-        }
-        guest_address = 0x80000000u | offset;
-    }
-    return __real_recomp_memory_u32_checked(guest_address);
-}
-
-void __wrap_recomp_guest_load(void *destination, uint32_t source, size_t size) {
-    if (size == 0) return;
-    if (sc2_is_guest_ram(source, size)) {
-        uint32_t offset = source & 0x03ffffffu;
-        if (recomp_fast_ram != nullptr) {
-            memcpy(destination, recomp_fast_ram + offset, size);
-            return;
-        }
-        source = 0x80000000u | offset;
-    }
-    __real_recomp_guest_load(destination, source, size);
-}
-
-void __wrap_recomp_guest_store(uint32_t destination, const void *source, size_t size) {
-    if (size == 0) return;
-    if (sc2_is_guest_ram(destination, size)) {
-        uint32_t offset = destination & 0x03ffffffu;
-        if (recomp_fast_ram != nullptr) {
-            memcpy(recomp_fast_ram + offset, source, size);
-            return;
-        }
-        destination = 0x80000000u | offset;
-    }
-    __real_recomp_guest_store(destination, source, size);
-}
-
-void __wrap_recomp_guest_memcpy(uint32_t destination, uint32_t source, size_t size) {
-    if (size == 0) return;
-    destination = sc2_normalize_guest_address(destination);
-    source = sc2_normalize_guest_address(source);
-    __real_recomp_guest_memcpy(destination, source, size);
-}
-
-void __wrap_recomp_guest_memset(uint32_t destination, int value, size_t size) {
-    if (size == 0) return;
-    destination = sc2_normalize_guest_address(destination);
-    __real_recomp_guest_memset(destination, value, size);
-}
+// Guest-memory wrappers moved to switch_fast_mem_wrap.c (LTO-enabled for inlining).
 
 
 
@@ -722,6 +690,33 @@ void Switch_StopWatchdog(void) {
         threadWaitForExit(&s_watchdog_thread);
         threadClose(&s_watchdog_thread);
     }
+}
+
+int __real_nanosleep(const struct timespec *req, struct timespec *rem);
+int __wrap_nanosleep(const struct timespec *req, struct timespec *rem) {
+    return __real_nanosleep(req, rem);
+}
+
+void sc2_fast_sub_000843D0(void);
+void __wrap_sub_000843D0(void) {
+    sc2_fast_sub_000843D0();
+}
+
+void __real_recomp_audio_output_reset_voice(uint32_t slot);
+void __wrap_recomp_audio_output_reset_voice(uint32_t slot) {
+    __real_recomp_audio_output_reset_voice(slot);
+}
+
+void __real_recomp_audio_output_submit(
+    uint32_t slot, const uint8_t *pcm, uint32_t bytes,
+    uint32_t sample_rate, uint32_t channels, uint32_t bits_per_sample,
+    int32_t volume_hundredth_db);
+void __wrap_recomp_audio_output_submit(
+    uint32_t slot, const uint8_t *pcm, uint32_t bytes,
+    uint32_t sample_rate, uint32_t channels, uint32_t bits_per_sample,
+    int32_t volume_hundredth_db) {
+    __real_recomp_audio_output_submit(
+        slot, pcm, bytes, sample_rate, channels, bits_per_sample, volume_hundredth_db);
 }
 
 } // extern "C"
