@@ -133,17 +133,6 @@ struct PerfStats {
         uint32_t a_in[2], a_out[2];
     };
     SlowDrawRecord worst_draws[5] = {};
-
-    // [FxDiag] counters for missing visual effects investigation (120-frame window)
-    uint32_t fx_offscreen_drops = 0;
-    uint32_t fx_empty_drops = 0;
-    uint32_t fx_bad_fvf_drops = 0;
-    uint32_t fx_copy_main = 0;
-    uint32_t fx_copy_rect = 0;
-    uint32_t fx_prim_pts = 0;
-    uint32_t fx_prim_lines = 0;
-    uint32_t fx_no_depth = 0;
-    uint32_t fx_alpha_test = 0;
 };
 static PerfStats g_perf;
 static inline uint64_t perfNow() { return armGetSystemTick(); }
@@ -1896,14 +1885,8 @@ RecompD3dPresenterError d3d_backend_submit(
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
         const RecompD3dPresenterDrawCommand &draw = command->data.draw;
         PerfScope perf_draw(&g_perf.t_draw_total);
-        if (draw.target.offscreen) {
-            g_perf.fx_offscreen_drops++;
-            return RECOMP_D3D_PRESENTER_OK;
-        }
-        if (!draw.vertex_bytes || draw.vertex_count == 0) {
-            g_perf.fx_empty_drops++;
-            return RECOMP_D3D_PRESENTER_OK;
-        }
+        if (draw.target.offscreen) return RECOMP_D3D_PRESENTER_OK;
+        if (!draw.vertex_bytes || draw.vertex_count == 0) return RECOMP_D3D_PRESENTER_OK;
         if (!beginFrameIfNeeded(presenter)) {
             return RECOMP_D3D_PRESENTER_CLOSED;
         }
@@ -1914,7 +1897,6 @@ RecompD3dPresenterError d3d_backend_submit(
 
         RecompD3dVertexLayout layout{};
         if (!recomp_d3d_fvf_layout(draw.fvf, &layout)) {
-            g_perf.fx_bad_fvf_drops++;
             return RECOMP_D3D_PRESENTER_OK;
         }
 
@@ -2222,16 +2204,9 @@ RecompD3dPresenterError d3d_backend_submit(
                     const float oy = draw.program_constants[59][1];
                     const float oz = draw.program_constants[59][2];
 
-                    const float c00 = 2.0f / guest_w;
-                    const float c11 = -2.0f / guest_h;
-                    const float c30 = -1.0f + 0.5f * c00;
-                    const float c31 = 1.0f + 0.5f * c11;
-
                     float w = (std::isfinite(r12[3]) && std::fabs(r12[3]) > 1e-6f) ? r12[3] : 1.0f;
-                    float gx = (std::isfinite(sx) && sx != 0.0f) ? ((r12[0] - ox) / sx) : r12[0];
-                    float gy = (std::isfinite(sy) && sy != 0.0f) ? ((r12[1] - oy) / sy) : r12[1];
-                    float ndc_x = gx * c00 + c30;
-                    float ndc_y = gy * c11 + c31;
+                    float ndc_x = (std::isfinite(sx) && sx != 0.0f) ? ((r12[0] - ox) / sx) : r12[0];
+                    float ndc_y = (std::isfinite(sy) && sy != 0.0f) ? ((r12[1] - oy) / sy) : r12[1];
                     float ndc_z = (std::isfinite(sz) && sz > 0.0f) ? std::clamp((r12[2] - oz) / sz, 0.0f, 1.0f) : 0.5f;
 
                     dv.x = ndc_x * w;
@@ -2630,18 +2605,13 @@ RecompD3dPresenterError d3d_backend_submit(
         }
 
         DkPrimitive prim = DkPrimitive_Triangles;
-        if (draw.primitive_type == 1) {
-            g_perf.fx_prim_pts++;
-        } else if (draw.primitive_type == 2) {
-            g_perf.fx_prim_lines++;
+        if (draw.primitive_type == 2) {
             prim = DkPrimitive_Lines;
         } else if (draw.primitive_type == 6) {
             prim = DkPrimitive_TriangleStrip;
         } else if (draw.primitive_type == 7) {
             prim = DkPrimitive_TriangleFan;
         }
-        if (draw.target.no_depth) g_perf.fx_no_depth++;
-        if (has_real_alpha_test) g_perf.fx_alpha_test++;
 
         if (idx_size > 0) {
             dkCmdBufBindIdxBuffer(cmd, DkIdxFormat_Uint16, idxGpu);
@@ -2724,7 +2694,6 @@ RecompD3dPresenterError d3d_backend_submit(
             presenter->query_count[slot] = q + 1;
         }
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_MAIN_COLOR) {
-        g_perf.fx_copy_main++;
         if (!beginFrameIfNeeded(presenter)) return RECOMP_D3D_PRESENTER_CLOSED;
         const auto &dest = command->data.copy_destination;
         RecompD3dPresenter::GpuCopySlot *dst = getOrAllocGpuCopy(presenter, dest.data, dest.width, dest.height);
@@ -2739,7 +2708,6 @@ RecompD3dPresenterError d3d_backend_submit(
             dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
         }
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_RECT) {
-        g_perf.fx_copy_rect++;
         if (!beginFrameIfNeeded(presenter)) return RECOMP_D3D_PRESENTER_CLOSED;
         const auto &cr = command->data.copy_rect;
         int src_slot = cr.from_previous_frame ? presenter->last_presented_slot : presenter->current_slot;
@@ -3041,11 +3009,6 @@ RecompD3dPresenterError d3d_backend_submit(
                         }
                     }
                 }
-                printf("[FxDiag] 120f drops(offscreen=%u empty=%u bad_fvf=%u) | copy(main=%u rect=%u) | prim(pts=%u lines=%u) | no_depth=%u alpha_test=%u\n",
-                       g_perf.fx_offscreen_drops, g_perf.fx_empty_drops, g_perf.fx_bad_fvf_drops,
-                       g_perf.fx_copy_main, g_perf.fx_copy_rect,
-                       g_perf.fx_prim_pts, g_perf.fx_prim_lines,
-                       g_perf.fx_no_depth, g_perf.fx_alpha_test);
             }
             g_perf = PerfStats{ .last_present = g_perf.last_present };
         }
