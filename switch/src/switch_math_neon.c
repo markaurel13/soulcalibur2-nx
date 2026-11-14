@@ -873,3 +873,34 @@ void __wrap_sub_000129F0(void)
     g_eflags &= ~1u;
     esp += 16;
 }
+
+void __wrap_sub_00011B60(void)
+{
+    const uint32_t src_va = MEM32(esp + 4);
+    const float sx = MEMF(esp + 8);
+    const float sy = MEMF(esp + 0xC);
+    const float sz = MEMF(esp + 0x10);
+    const float *src = (const float *)&MEM8(src_va);
+    float *dst = (float *)&MEM8(ecx);
+#if SC2_HAS_NEON
+    float32x4_t r0 = vld1q_f32(src + 0);
+    float32x4_t r1 = vld1q_f32(src + 4);
+    float32x4_t r2 = vld1q_f32(src + 8);
+    float32x4_t r3 = vld1q_f32(src + 12);
+    r0 = vsetq_lane_f32(vgetq_lane_f32(r0, 3), vmulq_n_f32(r0, sx), 3);
+    r1 = vsetq_lane_f32(vgetq_lane_f32(r1, 3), vmulq_n_f32(r1, sy), 3);
+    r2 = vsetq_lane_f32(vgetq_lane_f32(r2, 3), vmulq_n_f32(r2, sz), 3);
+    vst1q_f32(dst + 0, r0);
+    vst1q_f32(dst + 4, r1);
+    vst1q_f32(dst + 8, r2);
+    vst1q_f32(dst + 12, r3);
+#else
+    dst[0] = src[0] * sx; dst[1] = src[1] * sx; dst[2] = src[2] * sx; dst[3] = src[3];
+    dst[4] = src[4] * sy; dst[5] = src[5] * sy; dst[6] = src[6] * sy; dst[7] = src[7];
+    dst[8] = src[8] * sz; dst[9] = src[9] * sz; dst[10] = src[10] * sz; dst[11] = src[11];
+    dst[12] = src[12]; dst[13] = src[13]; dst[14] = src[14]; dst[15] = src[15];
+#endif
+    eax = src_va;
+    g_eflags &= ~1u;
+    esp += 20;
+}

@@ -133,7 +133,7 @@ static void sc2_phase0_report(void);
 
 // ---- PreDraw callee profiler (inclusive ticks via cntpct_el0) ----
 #define SC2_PREDRAW_PROF_LIST(X) \
-    X(0004B630) X(0004D090) X(00069370) \
+    X(00067D70) X(00069680) X(000688E0) X(00063100) \
     X(0003EE30) X(000343A0) X(0003D9A0) X(0003D9F0) \
     X(00046EA0) X(000423B0) X(0003FCF0) X(00042A80) \
     X(00048780) X(00048C00) X(00041120) X(00041550) \
@@ -144,6 +144,24 @@ struct PreDrawProfEntry {
     uint64_t ticks;
     uint32_t calls;
 };
+
+static PreDrawProfEntry s_pd_0004B630 = { "sub_0004B630", 0, 0 };
+void sc2_fast_sub_0004B630(void);
+void __wrap_sub_0004B630(void) {
+    uint64_t t0 = armGetSystemTick();
+    sc2_fast_sub_0004B630();
+    s_pd_0004B630.ticks += (armGetSystemTick() - t0);
+    s_pd_0004B630.calls++;
+}
+
+static PreDrawProfEntry s_pd_0004D090 = { "sub_0004D090", 0, 0 };
+void sc2_fast_sub_0004D090(void);
+void __wrap_sub_0004D090(void) {
+    uint64_t t0 = armGetSystemTick();
+    sc2_fast_sub_0004D090();
+    s_pd_0004D090.ticks += (armGetSystemTick() - t0);
+    s_pd_0004D090.calls++;
+}
 
 #define SC2_PD_DECL(fn) \
     static PreDrawProfEntry s_pd_##fn = { "sub_" #fn, 0, 0 }; \
@@ -157,11 +175,38 @@ struct PreDrawProfEntry {
 SC2_PREDRAW_PROF_LIST(SC2_PD_DECL)
 #undef SC2_PD_DECL
 
+static PreDrawProfEntry s_pd_00069370 = { "sub_00069370", 0, 0 };
+void sc2_fast_sub_00069370(void);
+void __wrap_sub_00069370(void) {
+    uint64_t t0 = armGetSystemTick();
+    sc2_fast_sub_00069370();
+    s_pd_00069370.ticks += (armGetSystemTick() - t0);
+    s_pd_00069370.calls++;
+}
+
+static PreDrawProfEntry s_pd_000843D0 = { "sub_000843D0", 0, 0 };
+void sc2_fast_sub_000843D0(void);
+static void sc2_wrap_843d0_timed(void) {
+    uint64_t t0 = armGetSystemTick();
+    sc2_fast_sub_000843D0();
+    s_pd_000843D0.ticks += (armGetSystemTick() - t0);
+    s_pd_000843D0.calls++;
+}
+
 static PreDrawProfEntry* const s_pd_entries[] = {
+    &s_pd_0004B630, &s_pd_0004D090, &s_pd_00069370, &s_pd_000843D0,
 #define SC2_PD_PTR(fn) &s_pd_##fn,
 SC2_PREDRAW_PROF_LIST(SC2_PD_PTR)
 #undef SC2_PD_PTR
 };
+
+static struct {
+    uint64_t prev_exit = 0;
+    uint64_t int_sum = 0, int_min = UINT64_MAX, int_max = 0;
+    uint64_t work_sum = 0, work_max = 0;
+    uint64_t wait_sum = 0, wait_max = 0;
+    uint32_t samples = 0, over_1695 = 0, work_over = 0, wait_over = 0;
+} s_gp;
 
 static void sc2_phase0_report(void) {
     static uint32_t frames = 0;
@@ -182,6 +227,19 @@ static void sc2_phase0_report(void) {
             e->calls = 0;
         }
         fprintf(f, "\n");
+        if (s_gp.samples > 0) {
+            double sn = (double)s_gp.samples;
+            fprintf(f, "[GuestPacing] n=%u over_16.95=%u (work_over=%u wait_overshoot=%u) | "
+                       "int=%.2fms [%.2f..%.2f] | work=%.2fms (max %.2f) | wait=%.2fms (max %.2f)\n",
+                    s_gp.samples, s_gp.over_1695, s_gp.work_over, s_gp.wait_over,
+                    (double)s_gp.int_sum / (ticks_per_ms * sn),
+                    (double)s_gp.int_min / ticks_per_ms,
+                    (double)s_gp.int_max / ticks_per_ms,
+                    (double)s_gp.work_sum / (ticks_per_ms * sn),
+                    (double)s_gp.work_max / ticks_per_ms,
+                    (double)s_gp.wait_sum / (ticks_per_ms * sn),
+                    (double)s_gp.wait_max / ticks_per_ms);
+        }
         fflush(f);
     } else {
         for (size_t i = 0; i < sizeof(s_pd_entries) / sizeof(s_pd_entries[0]); ++i) {
@@ -189,6 +247,10 @@ static void sc2_phase0_report(void) {
             s_pd_entries[i]->calls = 0;
         }
     }
+    s_gp.int_sum = 0; s_gp.int_min = UINT64_MAX; s_gp.int_max = 0;
+    s_gp.work_sum = 0; s_gp.work_max = 0;
+    s_gp.wait_sum = 0; s_gp.wait_max = 0;
+    s_gp.samples = s_gp.over_1695 = s_gp.work_over = s_gp.wait_over = 0;
     frames = 0; s_lk_calls = s_lk_null = s_ind_calls = 0;
 }
 
@@ -197,9 +259,28 @@ void __real_recomp_d3d_wait_present(void);
 void __wrap_recomp_d3d_wait_present(void) {
     uint64_t t0 = armGetSystemTick();
     __real_recomp_d3d_wait_present();
+    uint64_t t1 = armGetSystemTick();
+    uint64_t wait_dt = t1 - t0;
+    if (s_gp.prev_exit != 0) {
+        uint64_t work_dt = (t0 > s_gp.prev_exit) ? (t0 - s_gp.prev_exit) : 0;
+        uint64_t int_dt = t1 - s_gp.prev_exit;
+        s_gp.int_sum += int_dt;
+        if (int_dt < s_gp.int_min) s_gp.int_min = int_dt;
+        if (int_dt > s_gp.int_max) s_gp.int_max = int_dt;
+        s_gp.work_sum += work_dt;
+        if (work_dt > s_gp.work_max) s_gp.work_max = work_dt;
+        s_gp.wait_sum += wait_dt;
+        if (wait_dt > s_gp.wait_max) s_gp.wait_max = wait_dt;
+        if (int_dt > 325440ULL) {
+            ++s_gp.over_1695;
+            if (work_dt > 325440ULL) ++s_gp.work_over;
+            else ++s_gp.wait_over;
+        }
+        ++s_gp.samples;
+    }
+    s_gp.prev_exit = t1;
     sc2_phase0_report();
-    uint64_t dt = armGetSystemTick() - t0;
-    s_prof_core0.t_present_wait += dt;
+    s_prof_core0.t_present_wait += wait_dt;
     s_prof_core0.count_present_waits++;
 }
 
@@ -694,12 +775,17 @@ void Switch_StopWatchdog(void) {
 
 int __real_nanosleep(const struct timespec *req, struct timespec *rem);
 int __wrap_nanosleep(const struct timespec *req, struct timespec *rem) {
+    if (req && req->tv_sec == 0 && req->tv_nsec > 2000000L && req->tv_nsec <= 20000000L) {
+        struct timespec adj = *req;
+        adj.tv_nsec -= 1500000L;
+        return __real_nanosleep(&adj, rem);
+    }
     return __real_nanosleep(req, rem);
 }
 
 void sc2_fast_sub_000843D0(void);
 void __wrap_sub_000843D0(void) {
-    sc2_fast_sub_000843D0();
+    sc2_wrap_843d0_timed();
 }
 
 void __real_recomp_audio_output_reset_voice(uint32_t slot);

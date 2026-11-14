@@ -146,6 +146,8 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_sub_24720.c
     src/switch_sub_2b670.c
     src/switch_sub_240c0.c
+    src/switch_sub_4b630.c
+    src/switch_sub_69370.c
     src/switch_sub_843d0.c
     src/switch_sub_2b670.c
     src/switch_bone_neon.c
@@ -294,8 +296,6 @@ target_link_libraries(soulcalibur2
 set_source_files_properties(
     ${PROGRAM_SOURCES}
     src/switch_sub_2b670.c
-    src/switch_sub_843d0.c
-    src/switch_sub_2b670.c
     src/switch_profiler.cpp
     PROPERTIES COMPILE_OPTIONS "-fno-lto"
 )
@@ -320,6 +320,7 @@ target_link_options(soulcalibur2
     -Wl,--wrap=sub_00012790
     -Wl,--wrap=sub_00012950
     -Wl,--wrap=sub_000123C0
+    -Wl,--wrap=sub_00011B60
     -Wl,--wrap=recomp_d3d_light_set
     -Wl,--wrap=recomp_d3d_set_simple_render_state
     -Wl,--wrap=recomp_d3d8_submit
@@ -338,6 +339,10 @@ target_link_options(soulcalibur2
     -Wl,--wrap=sub_0004B630
     -Wl,--wrap=sub_0004D090
     -Wl,--wrap=sub_00069370
+    -Wl,--wrap=sub_00067D70
+    -Wl,--wrap=sub_00069680
+    -Wl,--wrap=sub_000688E0
+    -Wl,--wrap=sub_00063100
     -Wl,--wrap=sub_0003EE30
     -Wl,--wrap=sub_000343A0
     -Wl,--wrap=sub_0003D9A0

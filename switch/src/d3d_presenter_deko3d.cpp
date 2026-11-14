@@ -31,6 +31,7 @@ void Switch_TakeGuestPerf(uint64_t *d3d8_submit, uint64_t *dsound_pump,
                           char *thread_times_buf, size_t thread_times_size);
 bool Switch_IsGpuVtxEnabled(void);
 void Switch_TakeDrawProf(uint64_t *idx, uint64_t *gather_t, uint64_t *mat, uint64_t *shader, uint32_t *draws);
+void Switch_TakeDrawShaderProf(uint64_t *tex_t, uint64_t *comb_t, uint64_t *light_t, uint64_t *fog_t);
 void Switch_TakePushFailProf(uint32_t out[8]);
 bool Switch_IsFpsOverlayEnabled(void);
 }
@@ -95,13 +96,18 @@ struct PerfStats {
     uint64_t dyn_bytes = 0;
     uint32_t hist_16_75 = 0, hist_16_95 = 0, hist_20 = 0, hist_33 = 0, hist_50 = 0, hist_gt50 = 0;
     uint64_t prev_t_backend = 0, prev_t_vtx = 0, prev_t_tex = 0, prev_t_audio_pump = 0;
-    uint64_t prev_t_fence = 0, prev_t_acquire = 0, prev_t_draw_total = 0;
+    uint64_t prev_t_fence = 0, prev_t_acquire = 0, prev_t_draw_total = 0, prev_t_present = 0;
     struct PresHitchRec {
         uint32_t frame;
         double wall_ms, guest_ms, back_ms, draw_ms, vtx_ms, tex_ms, aud_ms, wait_ms;
         uint32_t draws, tex_up, dyn_kb;
     } pending_hitches[5] = {};
     uint32_t hitches_logged = 0;
+    struct PacingMissRec {
+        uint32_t frame;
+        double wall_ms, back_ms, draw_ms, vtx_ms, acq_ms, fence_ms, pres_ms;
+    } pacing_misses[3] = {};
+    uint32_t pacing_misses_logged = 0;
 
     // Hardware GPU timestamp counters
     uint64_t gpu_cat_ns[GPU_CAT_COUNT] = {};
@@ -127,6 +133,17 @@ struct PerfStats {
         uint32_t a_in[2], a_out[2];
     };
     SlowDrawRecord worst_draws[5] = {};
+
+    // [FxDiag] counters for missing visual effects investigation (120-frame window)
+    uint32_t fx_offscreen_drops = 0;
+    uint32_t fx_empty_drops = 0;
+    uint32_t fx_bad_fvf_drops = 0;
+    uint32_t fx_copy_main = 0;
+    uint32_t fx_copy_rect = 0;
+    uint32_t fx_prim_pts = 0;
+    uint32_t fx_prim_lines = 0;
+    uint32_t fx_no_depth = 0;
+    uint32_t fx_alpha_test = 0;
 };
 static PerfStats g_perf;
 static inline uint64_t perfNow() { return armGetSystemTick(); }
@@ -1879,8 +1896,14 @@ RecompD3dPresenterError d3d_backend_submit(
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
         const RecompD3dPresenterDrawCommand &draw = command->data.draw;
         PerfScope perf_draw(&g_perf.t_draw_total);
-        if (draw.target.offscreen) return RECOMP_D3D_PRESENTER_OK;
-        if (!draw.vertex_bytes || draw.vertex_count == 0) return RECOMP_D3D_PRESENTER_OK;
+        if (draw.target.offscreen) {
+            g_perf.fx_offscreen_drops++;
+            return RECOMP_D3D_PRESENTER_OK;
+        }
+        if (!draw.vertex_bytes || draw.vertex_count == 0) {
+            g_perf.fx_empty_drops++;
+            return RECOMP_D3D_PRESENTER_OK;
+        }
         if (!beginFrameIfNeeded(presenter)) {
             return RECOMP_D3D_PRESENTER_CLOSED;
         }
@@ -1891,6 +1914,7 @@ RecompD3dPresenterError d3d_backend_submit(
 
         RecompD3dVertexLayout layout{};
         if (!recomp_d3d_fvf_layout(draw.fvf, &layout)) {
+            g_perf.fx_bad_fvf_drops++;
             return RECOMP_D3D_PRESENTER_OK;
         }
 
@@ -2606,13 +2630,18 @@ RecompD3dPresenterError d3d_backend_submit(
         }
 
         DkPrimitive prim = DkPrimitive_Triangles;
-        if (draw.primitive_type == 2) {
+        if (draw.primitive_type == 1) {
+            g_perf.fx_prim_pts++;
+        } else if (draw.primitive_type == 2) {
+            g_perf.fx_prim_lines++;
             prim = DkPrimitive_Lines;
         } else if (draw.primitive_type == 6) {
             prim = DkPrimitive_TriangleStrip;
         } else if (draw.primitive_type == 7) {
             prim = DkPrimitive_TriangleFan;
         }
+        if (draw.target.no_depth) g_perf.fx_no_depth++;
+        if (has_real_alpha_test) g_perf.fx_alpha_test++;
 
         if (idx_size > 0) {
             dkCmdBufBindIdxBuffer(cmd, DkIdxFormat_Uint16, idxGpu);
@@ -2695,6 +2724,7 @@ RecompD3dPresenterError d3d_backend_submit(
             presenter->query_count[slot] = q + 1;
         }
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_MAIN_COLOR) {
+        g_perf.fx_copy_main++;
         if (!beginFrameIfNeeded(presenter)) return RECOMP_D3D_PRESENTER_CLOSED;
         const auto &dest = command->data.copy_destination;
         RecompD3dPresenter::GpuCopySlot *dst = getOrAllocGpuCopy(presenter, dest.data, dest.width, dest.height);
@@ -2709,6 +2739,7 @@ RecompD3dPresenterError d3d_backend_submit(
             dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
         }
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_RECT) {
+        g_perf.fx_copy_rect++;
         if (!beginFrameIfNeeded(presenter)) return RECOMP_D3D_PRESENTER_CLOSED;
         const auto &cr = command->data.copy_rect;
         int src_slot = cr.from_previous_frame ? presenter->last_presented_slot : presenter->current_slot;
@@ -2803,6 +2834,9 @@ RecompD3dPresenterError d3d_backend_submit(
             uint64_t d_tex = g_perf.t_tex - g_perf.prev_t_tex;
             uint64_t d_aud = g_perf.t_audio_pump - g_perf.prev_t_audio_pump;
             uint64_t d_wait = (g_perf.t_fence - g_perf.prev_t_fence) + (g_perf.t_acquire - g_perf.prev_t_acquire);
+            uint64_t d_fence = g_perf.t_fence - g_perf.prev_t_fence;
+            uint64_t d_acq = g_perf.t_acquire - g_perf.prev_t_acquire;
+            uint64_t d_pres = g_perf.t_present - g_perf.prev_t_present;
             uint64_t d_draw = g_perf.t_draw_total - g_perf.prev_t_draw_total;
             g_perf.prev_t_backend = g_perf.t_backend;
             g_perf.prev_t_vtx = g_perf.t_vtx;
@@ -2810,6 +2844,7 @@ RecompD3dPresenterError d3d_backend_submit(
             g_perf.prev_t_audio_pump = g_perf.t_audio_pump;
             g_perf.prev_t_fence = g_perf.t_fence;
             g_perf.prev_t_acquire = g_perf.t_acquire;
+            g_perf.prev_t_present = g_perf.t_present;
             g_perf.prev_t_draw_total = g_perf.t_draw_total;
             if (g_perf.last_present) {
                 uint64_t wall = now - g_perf.last_present;
@@ -2822,6 +2857,17 @@ RecompD3dPresenterError d3d_backend_submit(
                 else if (wall <= 641280ULL) ++g_perf.hist_33;
                 else if (wall <= 960000ULL) ++g_perf.hist_50;
                 else ++g_perf.hist_gt50;
+                if (wall > 325440ULL && presenter->draws_in_frame >= 100u && g_perf.pacing_misses_logged < 3u) {
+                    auto& pm = g_perf.pacing_misses[g_perf.pacing_misses_logged++];
+                    pm.frame = presenter->frame_counter;
+                    pm.wall_ms = perfMs(wall);
+                    pm.back_ms = perfMs(d_back);
+                    pm.draw_ms = perfMs(d_draw);
+                    pm.vtx_ms = perfMs(d_vtx);
+                    pm.acq_ms = perfMs(d_acq);
+                    pm.fence_ms = perfMs(d_fence);
+                    pm.pres_ms = perfMs(d_pres);
+                }
                 if (wall > 384000ULL && presenter->draws_in_frame >= 100u &&
                     g_perf.hitches_logged < 5u && s_total_pres_hitches < 50u) {
                     auto& hr = g_perf.pending_hitches[g_perf.hitches_logged++];
@@ -2862,6 +2908,13 @@ RecompD3dPresenterError d3d_backend_submit(
                 printf("[Perf] frame_hist: <=16.75ms=%u <=16.95ms(59+fps)=%u(%.1f%%) 16.75-20ms=%u 20-33.4ms=%u 33.4-50ms=%u >50ms=%u\n",
                        g_perf.hist_16_75, g_perf.hist_16_95, pct_59,
                        g_perf.hist_20, g_perf.hist_33, g_perf.hist_50, g_perf.hist_gt50);
+                for (uint32_t mi = 0; mi < g_perf.pacing_misses_logged; ++mi) {
+                    const auto& pm = g_perf.pacing_misses[mi];
+                    printf("[PacingMiss] f=%u wall=%.2fms back=%.2fms (draw=%.2f vtx=%.2f acq=%.2f fence=%.2f pres=%.2f)\n",
+                           pm.frame, pm.wall_ms, pm.back_ms, pm.draw_ms, pm.vtx_ms,
+                           pm.acq_ms, pm.fence_ms, pm.pres_ms);
+                }
+                g_perf.pacing_misses_logged = 0;
                 for (uint32_t hi = 0; hi < g_perf.hitches_logged; ++hi) {
                     const auto& hr = g_perf.pending_hitches[hi];
                     printf("[Hitch-Pres] frame=%u wall=%.2fms (guest_net=%.2fms backend=%.2fms [draw=%.2f vtx=%.2f tex=%.2f aud=%.2f wait=%.2f]) draws=%u tex_up=%u dyn_kb=%u\n",
@@ -2922,8 +2975,11 @@ RecompD3dPresenterError d3d_backend_submit(
                     uint64_t p_idx = 0, p_gath = 0, p_mat = 0, p_shd = 0;
                     uint32_t p_drw = 0;
                     Switch_TakeDrawProf(&p_idx, &p_gath, &p_mat, &p_shd, &p_drw);
-                    printf("[DrawProf] draws=%.1f/f | idx=%.2fms gather=%.2fms mat=%.2fms shader=%.2fms\n",
-                           (double)p_drw / n, perfMs(p_idx) / n, perfMs(p_gath) / n, perfMs(p_mat) / n, perfMs(p_shd) / n);
+                    uint64_t p_tex_t = 0, p_comb_t = 0, p_light_t = 0, p_fog_t = 0;
+                    Switch_TakeDrawShaderProf(&p_tex_t, &p_comb_t, &p_light_t, &p_fog_t);
+                    printf("[DrawProf] draws=%.1f/f | idx=%.2fms gather=%.2fms mat=%.2fms shader=%.2fms (tex=%.2f comb=%.2f light=%.2f fog=%.2f)\n",
+                           (double)p_drw / n, perfMs(p_idx) / n, perfMs(p_gath) / n, perfMs(p_mat) / n, perfMs(p_shd) / n,
+                           perfMs(p_tex_t) / n, perfMs(p_comb_t) / n, perfMs(p_light_t) / n, perfMs(p_fog_t) / n);
                     uint32_t w_dir = 0, w_gath = 0, w_push = 0, w_wake = 0, w_spin = 0;
                     uint64_t w_exec = 0, w_flush = 0, w_enq = 0;
                     Switch_TakeWorkerProf(&w_dir, &w_gath, &w_push, &w_exec, &w_flush, &w_enq, &w_wake, &w_spin);
@@ -2985,6 +3041,11 @@ RecompD3dPresenterError d3d_backend_submit(
                         }
                     }
                 }
+                printf("[FxDiag] 120f drops(offscreen=%u empty=%u bad_fvf=%u) | copy(main=%u rect=%u) | prim(pts=%u lines=%u) | no_depth=%u alpha_test=%u\n",
+                       g_perf.fx_offscreen_drops, g_perf.fx_empty_drops, g_perf.fx_bad_fvf_drops,
+                       g_perf.fx_copy_main, g_perf.fx_copy_rect,
+                       g_perf.fx_prim_pts, g_perf.fx_prim_lines,
+                       g_perf.fx_no_depth, g_perf.fx_alpha_test);
             }
             g_perf = PerfStats{ .last_present = g_perf.last_present };
         }
