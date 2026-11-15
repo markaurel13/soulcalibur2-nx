@@ -3,7 +3,6 @@ import { DiscParsers } from "./xiso.js";
 const REPO_OWNER = "markaurel13";
 const REPO_NAME = "soulcalibur2-nx";
 const REPO_BRANCH = "switch-port";
-const RELEASE_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
 
 const GUEST_PY_FILES = [
   "build_guest.py",
@@ -24,7 +23,6 @@ const GUEST_PY_FILES = [
 ];
 
 const state = {
-  release: null, // { tag, nroName, nroUrl, nroSize }
   nroBlob: null,
   xbox: {
     "default.xbe": null, // { name, blob }
@@ -106,43 +104,7 @@ function updateUI() {
   }
 }
 
-// ---- 1. Fetch latest GitHub Release (.nro) ----
-async function loadLatestRelease() {
-  const badge = $("release-info");
-  const dlBtn = $("btn-download-nro");
-  try {
-    const res = await fetch(RELEASE_API, { headers: { Accept: "application/vnd.github+json" } });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const assets = Array.isArray(data.assets) ? data.assets : [];
-    const nro = assets.find((a) => a.name.toLowerCase().endsWith(".nro"));
-
-    if (!nro) {
-      badge.textContent = `Release ${data.tag_name || ""} encontrado, pero sin archivo .nro adjunto aún.`;
-      dlBtn.hidden = true;
-      return;
-    }
-
-    state.release = {
-      tag: data.tag_name,
-      nroName: nro.name,
-      nroUrl: nro.browser_download_url,
-      nroSize: nro.size,
-    };
-
-    badge.innerHTML = `Última versión: <strong>${data.tag_name}</strong> · <code>${nro.name}</code> (${formatBytes(nro.size)})`;
-    dlBtn.href = nro.browser_download_url;
-    dlBtn.download = nro.name;
-    dlBtn.hidden = false;
-    log(`Release detectado: ${data.tag_name} (${nro.name}, ${formatBytes(nro.size)})`, "ok");
-  } catch (err) {
-    badge.textContent = "Sin releases publicados aún (o límite de API de GitHub). Puedes cargar tu soulcalibur2.nro manualmente.";
-    dlBtn.hidden = true;
-    log(`No se pudo consultar el último Release: ${err.message}`, "warn");
-  }
-}
-
-// ---- 2. Handle Xbox Disc / Files ----
+// ---- 1. Handle Xbox Disc / Files ----
 async function handleXboxInput(fileList) {
   for (const file of fileList) {
     const low = file.name.toLowerCase();
@@ -369,24 +331,6 @@ async function writeBlobStreaming(dirHandle, filename, blob, onChunk) {
   }
 }
 
-async function resolveNroBlob() {
-  if (state.nroBlob) return state.nroBlob;
-  if (!state.release || !state.release.nroUrl) return null;
-  try {
-    log(`Descargando ${state.release.nroName} desde GitHub Releases...`);
-    const res = await fetch(state.release.nroUrl);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    return { name: state.release.nroName, blob };
-  } catch (err) {
-    log(
-      `GitHub bloqueó la descarga directa por CORS (${err.message}). Usa el botón "Descargar soulcalibur2.nro" de arriba y cópialo junto a estos archivos.`,
-      "warn"
-    );
-    return null;
-  }
-}
-
 async function exportToDirectory() {
   if (!window.showDirectoryPicker) {
     alert("Tu navegador no soporta escritura directa a carpetas. Usa Chrome/Edge/Brave o el botón 'Descargar archivos'.");
@@ -405,9 +349,6 @@ async function exportToDirectory() {
     }
     await targetDir.getDirectoryHandle("save", { create: true });
 
-    const guests = await buildGuestsIfNeeded();
-    const nro = await resolveNroBlob();
-
     const queue = [
       state.xbox["default.xbe"],
       state.xbox["root.olk"],
@@ -415,7 +356,7 @@ async function exportToDirectory() {
       state.xbox["bgm.afs"],
     ];
     if (guests) queue.push({ name: "guests.olk", blob: guests });
-    if (nro) queue.push(nro);
+    if (state.nroBlob) queue.push(state.nroBlob);
 
     const totalBytes = queue.reduce((acc, f) => acc + f.blob.size, 0);
     let writtenBytes = 0;
@@ -462,15 +403,6 @@ async function showManualDownloads() {
       container.appendChild(a);
     }
 
-    if (state.release && state.release.nroUrl) {
-      const a = document.createElement("a");
-      a.className = "dl-chip dl-nro";
-      a.href = state.release.nroUrl;
-      a.download = state.release.nroName;
-      a.textContent = `⬇ ${state.release.nroName} (${state.release.tag})`;
-      container.appendChild(a);
-    }
-
     setProgress(100, "Archivos listos para descargar manualmente a sdmc:/switch/soulcalibur2/");
     log("Enlaces de descarga generados.", "ok");
   } catch (err) {
@@ -498,7 +430,6 @@ function wireDropzone(zoneId, inputId, handler) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  loadLatestRelease();
   wireDropzone("drop-xbox", "file-xbox", handleXboxInput);
   wireDropzone("drop-gc", "file-gc", handleGameCubeInput);
   wireDropzone("drop-ps2", "file-ps2", handlePs2Input);
