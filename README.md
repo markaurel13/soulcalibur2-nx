@@ -18,7 +18,7 @@ Unlike traditional emulation, this port statically recompiles the original Xbox 
 
 ## ✨ Features
 
-- **~60 FPS on Stock Clocks:** Native ARM64 execution with zero JIT or emulation overhead, running at full speed on stock Nintendo Switch clocks (1020 MHz CPU).
+- **~60 FPS on Stock Clocks:** Running at full speed on Stock Clocks, both Handheld and Docked.
 - **Dynamic Docked / Handheld Resolution Scaling:**
   - **Docked Mode:** Renders natively at **1920x1080 (1080p)** with hardware swapchain scaling.
   - **Handheld Mode:** Renders natively at **1280x720 (720p)**.
