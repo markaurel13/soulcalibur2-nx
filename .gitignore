@@ -72,3 +72,6 @@ Thumbs.db
 # Windows launchers, built by tools/package_test.py --launchers .
 /Launcher.exe
 /DOA2U.exe
+
+# Local private reference guides
+guides/renut_nx_ultimate_base/

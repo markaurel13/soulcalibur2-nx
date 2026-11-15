@@ -958,9 +958,6 @@ static uint32_t lookupOrUploadSingleTexture(
         dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
         p->tex_uploads_in_frame++;
-        printf("[TexMeta] slot=%u COMP fmt=0x%x %ux%u lin=%u mips=%u/%u bc_cpu=0 bytes=%u\n",
-               ct.desc_slot, fmt, desc.width, desc.height, desc.linear ? 1u : 0u,
-               desc.mip_levels, 1u, upload_size);
         return ct.desc_slot;
     }
 
@@ -1172,9 +1169,6 @@ static uint32_t lookupOrUploadSingleTexture(
     dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
     p->tex_uploads_in_frame++;
-    printf("[TexMeta] slot=%u BGRA fmt=0x%x %ux%u lin=%u mips=%u/%u bc_cpu=%u bytes=%u\n",
-           ct.desc_slot, fmt, desc.width, desc.height, desc.linear ? 1u : 0u,
-           desc.mip_levels, mips, small_bc_cpu ? 1u : 0u, upload_size);
     {
         uint64_t t_tex_end = perfNow();
         double total_ms = perfMs(t_tex_end - t_tex_start);
@@ -1499,6 +1493,132 @@ extern "C" void Switch_GetDeko3DState(int *current_slot, int *cur_cmd_slot, uint
     }
 }
 
+static uint32_t s_lb_min_y = 0u;
+static uint32_t s_lb_max_y = 0u;
+
+static void getTargetResolutionForMode(uint32_t *out_w, uint32_t *out_h) {
+    if (appletGetOperationMode() == AppletOperationMode_Console) {
+        *out_w = 1920u;
+        *out_h = 1080u;
+    } else {
+        *out_w = 1280u;
+        *out_h = 720u;
+    }
+}
+
+static void destroyResolutionResources(RecompD3dPresenter *p) {
+    if (!p) return;
+    if (p->queue) dkQueueWaitIdle(p->queue);
+    if (p->swapchain) {
+        dkSwapchainDestroy(p->swapchain);
+        p->swapchain = nullptr;
+    }
+    p->current_slot = -1;
+    p->last_presented_slot = -1;
+    if (p->block_gpu_copies) {
+        dkMemBlockDestroy(p->block_gpu_copies);
+        p->block_gpu_copies = nullptr;
+    }
+    if (p->block_depth) {
+        dkMemBlockDestroy(p->block_depth);
+        p->block_depth = nullptr;
+    }
+    if (p->block_framebuffers) {
+        dkMemBlockDestroy(p->block_framebuffers);
+        p->block_framebuffers = nullptr;
+    }
+}
+
+static void createResolutionResources(RecompD3dPresenter *p, uint32_t width, uint32_t height) {
+    p->width = width;
+    p->height = height;
+    s_lb_min_y = 0u;
+    s_lb_max_y = 0u;
+
+    NWindow *nw = nwindowGetDefault();
+    nwindowSetDimensions(nw, width, height);
+
+    // Calculate Framebuffer Layout and Allocate Color Targets
+    DkImageLayoutMaker imageLayoutMaker;
+    dkImageLayoutMakerDefaults(&imageLayoutMaker, p->device);
+    imageLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression;
+    imageLayoutMaker.format = DkImageFormat_RGBA8_Unorm;
+    imageLayoutMaker.dimensions[0] = width;
+    imageLayoutMaker.dimensions[1] = height;
+
+    DkImageLayout framebufferLayout;
+    dkImageLayoutInitialize(&framebufferLayout, &imageLayoutMaker);
+
+    uint32_t framebufferSize = dkImageLayoutGetSize(&framebufferLayout);
+    uint32_t framebufferAlign = dkImageLayoutGetAlignment(&framebufferLayout);
+    framebufferSize = (framebufferSize + framebufferAlign - 1) & ~(framebufferAlign - 1);
+
+    DkMemBlockMaker fbMemBlockMaker;
+    dkMemBlockMakerDefaults(&fbMemBlockMaker, p->device, NUM_FRAMEBUFFERS * framebufferSize);
+    fbMemBlockMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+    p->block_framebuffers = dkMemBlockCreate(&fbMemBlockMaker);
+
+    for (unsigned i = 0; i < NUM_FRAMEBUFFERS; i++) {
+        p->framebuffer_ptrs[i] = &p->framebuffers[i];
+        dkImageInitialize(&p->framebuffers[i], &framebufferLayout, p->block_framebuffers, i * framebufferSize);
+        dkImageViewDefaults(&p->framebuffer_views[i], &p->framebuffers[i]);
+        p->target_ptrs[i] = &p->framebuffer_views[i];
+    }
+
+    // Depth Buffer (Z24S8)
+    DkImageLayoutMaker depthLayoutMaker;
+    dkImageLayoutMakerDefaults(&depthLayoutMaker, p->device);
+    depthLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_HwCompression;
+    depthLayoutMaker.format = DkImageFormat_Z24S8;
+    depthLayoutMaker.dimensions[0] = width;
+    depthLayoutMaker.dimensions[1] = height;
+
+    DkImageLayout depthLayout;
+    dkImageLayoutInitialize(&depthLayout, &depthLayoutMaker);
+
+    uint32_t depthSize = dkImageLayoutGetSize(&depthLayout);
+    uint32_t depthAlign = dkImageLayoutGetAlignment(&depthLayout);
+    depthSize = (depthSize + depthAlign - 1) & ~(depthAlign - 1);
+
+    DkMemBlockMaker depthMemBlockMaker;
+    dkMemBlockMakerDefaults(&depthMemBlockMaker, p->device, depthSize);
+    depthMemBlockMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+    p->block_depth = dkMemBlockCreate(&depthMemBlockMaker);
+
+    dkImageInitialize(&p->depth_image, &depthLayout, p->block_depth, 0);
+    dkImageViewDefaults(&p->depth_view, &p->depth_image);
+
+    // GPU Copy Pool (for CopyRects / CopyMainColor / backbuffer sampling)
+    DkMemBlockMaker gcMaker;
+    dkMemBlockMakerDefaults(&gcMaker, p->device, GPU_COPY_POOL_SIZE);
+    gcMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+    p->block_gpu_copies = dkMemBlockCreate(&gcMaker);
+
+    DkImageLayoutMaker slm;
+    dkImageLayoutMakerDefaults(&slm, p->device);
+    slm.flags = DkImageFlags_Usage2DEngine | DkImageFlags_UsageRender;
+    slm.format = DkImageFormat_RGBA8_Unorm;
+    slm.dimensions[0] = width;
+    slm.dimensions[1] = height;
+    DkImageLayout slayout;
+    dkImageLayoutInitialize(&slayout, &slm);
+    uint32_t ssize = (uint32_t)dkImageLayoutGetSize(&slayout);
+    uint32_t salign = dkImageLayoutGetAlignment(&slayout);
+    p->gpu_copy_pool_offset = (ssize + salign - 1) & ~(salign - 1);
+    dkImageInitialize(&p->backbuffer_snap_image, &slayout, p->block_gpu_copies, 0);
+    dkImageViewDefaults(&p->backbuffer_snap_view, &p->backbuffer_snap_image);
+    dkImageDescriptorInitialize(&p->img_descs_cpu[MAX_TEX_CACHE + 1], &p->backbuffer_snap_view, false, false);
+    p->last_presented_slot = -1;
+    p->next_gpu_copy_slot = 0;
+    memset(p->gpu_copies, 0, sizeof(p->gpu_copies));
+
+    // Swapchain (double-buffered, lazy image acquisition per frame)
+    DkSwapchainMaker swapMaker;
+    dkSwapchainMakerDefaults(&swapMaker, p->device, nw, p->framebuffer_ptrs, NUM_FRAMEBUFFERS);
+    p->swapchain = dkSwapchainCreate(&swapMaker);
+    p->current_slot = -1;
+}
+
 RecompD3dPresenterError d3d_backend_create(
     const RecompD3dPresenterConfig *config, RecompD3dPresenter **out_presenter) {
     if (!out_presenter) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
@@ -1511,8 +1631,10 @@ RecompD3dPresenterError d3d_backend_create(
     clearTexHashTable(p);
     p->guest_width = config && config->width ? config->width : 640;
     p->guest_height = config && config->height ? config->height : 480;
-    p->width = 1280;
-    p->height = 720;
+    uint32_t init_w = 1280u, init_h = 720u;
+    getTargetResolutionForMode(&init_w, &init_h);
+    p->width = init_w;
+    p->height = init_h;
     p->immediate_present = false;
 
     // 1. Create Device
@@ -1564,56 +1686,6 @@ RecompD3dPresenterError d3d_backend_create(
             p->query_count[i] = 0;
         }
     }
-
-    // 4. Calculate Framebuffer Layout and Allocate Color Targets
-    DkImageLayoutMaker imageLayoutMaker;
-    dkImageLayoutMakerDefaults(&imageLayoutMaker, p->device);
-    imageLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression;
-    imageLayoutMaker.format = DkImageFormat_RGBA8_Unorm;
-    imageLayoutMaker.dimensions[0] = p->width;
-    imageLayoutMaker.dimensions[1] = p->height;
-
-    DkImageLayout framebufferLayout;
-    dkImageLayoutInitialize(&framebufferLayout, &imageLayoutMaker);
-
-    uint32_t framebufferSize = dkImageLayoutGetSize(&framebufferLayout);
-    uint32_t framebufferAlign = dkImageLayoutGetAlignment(&framebufferLayout);
-    framebufferSize = (framebufferSize + framebufferAlign - 1) & ~(framebufferAlign - 1);
-
-    DkMemBlockMaker fbMemBlockMaker;
-    dkMemBlockMakerDefaults(&fbMemBlockMaker, p->device, NUM_FRAMEBUFFERS * framebufferSize);
-    fbMemBlockMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
-    p->block_framebuffers = dkMemBlockCreate(&fbMemBlockMaker);
-
-    for (unsigned i = 0; i < NUM_FRAMEBUFFERS; i++) {
-        p->framebuffer_ptrs[i] = &p->framebuffers[i];
-        dkImageInitialize(&p->framebuffers[i], &framebufferLayout, p->block_framebuffers, i * framebufferSize);
-        dkImageViewDefaults(&p->framebuffer_views[i], &p->framebuffers[i]);
-        p->target_ptrs[i] = &p->framebuffer_views[i];
-    }
-
-    // 5. Depth Buffer (Z24S8)
-    DkImageLayoutMaker depthLayoutMaker;
-    dkImageLayoutMakerDefaults(&depthLayoutMaker, p->device);
-    depthLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_HwCompression;
-    depthLayoutMaker.format = DkImageFormat_Z24S8;
-    depthLayoutMaker.dimensions[0] = p->width;
-    depthLayoutMaker.dimensions[1] = p->height;
-
-    DkImageLayout depthLayout;
-    dkImageLayoutInitialize(&depthLayout, &depthLayoutMaker);
-
-    uint32_t depthSize = dkImageLayoutGetSize(&depthLayout);
-    uint32_t depthAlign = dkImageLayoutGetAlignment(&depthLayout);
-    depthSize = (depthSize + depthAlign - 1) & ~(depthAlign - 1);
-
-    DkMemBlockMaker depthMemBlockMaker;
-    dkMemBlockMakerDefaults(&depthMemBlockMaker, p->device, depthSize);
-    depthMemBlockMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
-    p->block_depth = dkMemBlockCreate(&depthMemBlockMaker);
-
-    dkImageInitialize(&p->depth_image, &depthLayout, p->block_depth, 0);
-    dkImageViewDefaults(&p->depth_view, &p->depth_image);
 
     // 6. Code Memory Block & Shaders
     DkMemBlockMaker codeMaker;
@@ -1755,37 +1827,8 @@ RecompD3dPresenterError d3d_backend_create(
         dkCmdBufAddMemory(p->cmdbuf[0], p->block_cmd[0], 0, CMD_BUF_SIZE);
     }
 
-    // 8b. GPU Copy Pool (for CopyRects / CopyMainColor / backbuffer sampling)
-    {
-        DkMemBlockMaker gcMaker;
-        dkMemBlockMakerDefaults(&gcMaker, p->device, GPU_COPY_POOL_SIZE);
-        gcMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
-        p->block_gpu_copies = dkMemBlockCreate(&gcMaker);
-
-        DkImageLayoutMaker slm;
-        dkImageLayoutMakerDefaults(&slm, p->device);
-        slm.flags = DkImageFlags_Usage2DEngine | DkImageFlags_UsageRender;
-        slm.format = DkImageFormat_RGBA8_Unorm;
-        slm.dimensions[0] = p->width;
-        slm.dimensions[1] = p->height;
-        DkImageLayout slayout;
-        dkImageLayoutInitialize(&slayout, &slm);
-        uint32_t ssize = (uint32_t)dkImageLayoutGetSize(&slayout);
-        uint32_t salign = dkImageLayoutGetAlignment(&slayout);
-        p->gpu_copy_pool_offset = (ssize + salign - 1) & ~(salign - 1);
-        dkImageInitialize(&p->backbuffer_snap_image, &slayout, p->block_gpu_copies, 0);
-        dkImageViewDefaults(&p->backbuffer_snap_view, &p->backbuffer_snap_image);
-        dkImageDescriptorInitialize(&p->img_descs_cpu[MAX_TEX_CACHE + 1], &p->backbuffer_snap_view, false, false);
-        p->last_presented_slot = -1;
-        p->next_gpu_copy_slot = 0;
-        memset(p->gpu_copies, 0, sizeof(p->gpu_copies));
-    }
-
-    // 9. Swapchain (double-buffered, lazy image acquisition per frame)
-    DkSwapchainMaker swapMaker;
-    dkSwapchainMakerDefaults(&swapMaker, p->device, nwindowGetDefault(), p->framebuffer_ptrs, NUM_FRAMEBUFFERS);
-    p->swapchain = dkSwapchainCreate(&swapMaker);
-    p->current_slot = -1;
+    // 8b. Resolution-dependent Framebuffers, Depth, GPU Copy Pool & Swapchain
+    createResolutionResources(p, init_w, init_h);
 
     printf("[Deko3D] Low-Level 3D Renderer Ready: Guest=%ux%u -> Host=%ux%u (TexPool=160MB, Cache=2048, HW-BC1/2/3)\n",
         p->guest_width, p->guest_height, p->width, p->height);
@@ -1798,6 +1841,22 @@ RecompD3dPresenterError d3d_backend_create(
 static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
     if (p->current_slot >= 0) return true;
     if (!appletMainLoop()) return false;
+
+    uint32_t target_w = 1280u, target_h = 720u;
+    getTargetResolutionForMode(&target_w, &target_h);
+    if (target_w != p->width || target_h != p->height) {
+        printf("[Deko3D] Operation mode changed: %ux%u -> %ux%u (recreating swapchain)\n",
+               p->width, p->height, target_w, target_h);
+        for (uint32_t i = 0; i < NUM_CMD_SLOTS; ++i) {
+            if (p->slot_has_fence[i]) {
+                dkFenceWait(&p->slot_fences[i], -1);
+                p->slot_has_fence[i] = false;
+                p->query_count[i] = 0;
+            }
+        }
+        destroyResolutionResources(p);
+        createResolutionResources(p, target_w, target_h);
+    }
 
     uint32_t slot = p->cur_cmd_slot;
     if (p->slot_has_fence[slot]) {
@@ -2120,8 +2179,6 @@ struct StageDiagCounters {
 };
 static StageDiagCounters g_sdiag;
 static uint32_t s_cur_clear_color = 0u;
-static uint32_t s_lb_min_y = 0u;
-static uint32_t s_lb_max_y = 0u;
 
 static uint32_t s_clears_in_frame = 0u;
 static uint32_t s_prev_draws_in_frame = 0u;
@@ -2138,14 +2195,6 @@ RecompD3dPresenterError d3d_backend_submit(
     pumpAudioIfDue();
 
     if (command->type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR) {
-        if (presenter->frame_counter == g_sdiag.dump_target_frame && g_sdiag.dump_target_frame != 0u) {
-            printf("[ClearDump] f=%u off=%u cc=%u(0x%08x) cd=%u(%.3f) cs=%u(%u)\n",
-                   presenter->frame_counter,
-                   command->data.clear.target.offscreen ? 1u : 0u,
-                   command->data.clear.clear_color ? 1u : 0u, command->data.clear.color,
-                   command->data.clear.clear_depth ? 1u : 0u, command->data.clear.z,
-                   command->data.clear.clear_stencil ? 1u : 0u, command->data.clear.stencil);
-        }
         if (command->data.clear.target.offscreen) {
             return RECOMP_D3D_PRESENTER_OK;
         }
@@ -2939,79 +2988,6 @@ RecompD3dPresenterError d3d_backend_submit(
             dkCmdBufBindTextures(cmd, DkStage_Fragment, 0, tex_handles, num_textures);
         }
 
-        if (presenter->frame_counter == g_sdiag.dump_target_frame && g_sdiag.dump_target_frame != 0u &&
-            (color_mask != 0u || has_real_alpha_test)) {
-            const char *fsh_tag = (chosen_fsh == &presenter->fsh_null) ? "null"
-                                : (chosen_fsh == &presenter->fsh_null_alpha) ? "null_alpha"
-                                : (chosen_fsh == &presenter->fsh_color) ? "color"
-                                : (chosen_fsh == &presenter->fsh_tex) ? "tex"
-                                : (chosen_fsh == &presenter->fsh_ff_mod2x) ? "ff_mod2x"
-                                : (chosen_fsh == &presenter->fsh_comb_fast) ? "comb_fast"
-                                : (chosen_fsh == &presenter->fsh_comb2) ? "comb2" : "gen";
-            float min_x = 0.0f, min_y = 0.0f, max_x = 0.0f, max_y = 0.0f, min_z = 0.0f, max_z = 0.0f;
-            float u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
-            uint32_t c0 = 0u;
-            if (draw.vertex_bytes && draw.vertex_count > 0 && stride >= 12u) {
-                const uint8_t *vb = (const uint8_t *)draw.vertex_bytes;
-                std::memcpy(&min_x, vb + 0, 4); max_x = min_x;
-                std::memcpy(&min_y, vb + 4, 4); max_y = min_y;
-                std::memcpy(&min_z, vb + 8, 4); max_z = min_z;
-                uint32_t v_scan = draw.vertex_count < 4096u ? draw.vertex_count : 4096u;
-                for (uint32_t vi = 1u; vi < v_scan; ++vi) {
-                    float vx = 0.0f, vy = 0.0f, vz = 0.0f;
-                    std::memcpy(&vx, vb + (size_t)vi * stride + 0, 4);
-                    std::memcpy(&vy, vb + (size_t)vi * stride + 4, 4);
-                    std::memcpy(&vz, vb + (size_t)vi * stride + 8, 4);
-                    if (vx < min_x) min_x = vx; if (vx > max_x) max_x = vx;
-                    if (vy < min_y) min_y = vy; if (vy > max_y) max_y = vy;
-                    if (vz < min_z) min_z = vz; if (vz > max_z) max_z = vz;
-                }
-                if (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT && layout.diffuse_offset + 4u <= stride) {
-                    std::memcpy(&c0, vb + layout.diffuse_offset, 4);
-                }
-                if (layout.texcoord_count > 0 && layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT &&
-                    layout.texcoord_offset + 8 <= stride) {
-                    std::memcpy(&u0, vb + layout.texcoord_offset, 4);
-                    std::memcpy(&v0, vb + layout.texcoord_offset + 4, 4);
-                }
-                if (draw.vertex_count > 1) {
-                    const uint8_t *vb_last = vb + (size_t)(draw.vertex_count - 1u) * stride;
-                    if (layout.texcoord_count > 0 && layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT &&
-                        layout.texcoord_offset + 8 <= stride) {
-                        std::memcpy(&u1, vb_last + layout.texcoord_offset, 4);
-                        std::memcpy(&v1, vb_last + layout.texcoord_offset + 4, 4);
-                    }
-                }
-            }
-            printf("[DrawDump] f=%u d=%u fsh=%s vsh=%s pre=%u prog=%u prim=%u v=%u i=%u cm=0x%x "
-                   "op0=(%u,%u,%u) c0=0x%08x "
-                   "t0=(has=%u,fmt=0x%x,%ux%u,lin=%u,m=%u,au=%u,av=%u) "
-                   "t1=(st=%u,fmt=0x%x,%ux%u,tm=0x%x) "
-                   "at=(%u,%u,%u) bl=(%u,%u,%u,%u) z=(%u,%u,%u) cull=%u "
-                   "vp=(%.0f,%.0f,%.0f,%.0f) sc=(%u,%u,%u,%u) fog=%u "
-                   "box=(%.1f,%.1f)-(%.1f,%.1f) zr=(%.2f..%.2f) uv=(%.3f,%.3f)->(%.3f,%.3f)\n",
-                   presenter->frame_counter, presenter->draws_in_frame, fsh_tag,
-                   use_gpu_vtx ? "ff" : "cpu",
-                   layout.pretransformed ? 1u : 0u, draw.program_count, (uint32_t)draw.primitive_type,
-                   draw.vertex_count, draw.index_count, color_mask,
-                   (uint32_t)pp.stages[0].color_op, (uint32_t)pp.stages[0].alpha_op, pp.stages[0].alpha_kill ? 1u : 0u,
-                   c0,
-                   draw.has_texture ? 1u : 0u, (uint32_t)draw.texture.format_byte,
-                   draw.texture.width, draw.texture.height, draw.texture.linear ? 1u : 0u,
-                   draw.texture.mip_levels, (uint32_t)draw.address_u, (uint32_t)draw.address_v,
-                   (uint32_t)pp.stage_count, (uint32_t)draw.stage_textures[1].desc.format_byte,
-                   draw.stage_textures[1].desc.width, draw.stage_textures[1].desc.height,
-                   pp.combiners.texture_modes,
-                   draw.depth.alpha_test_enable ? 1u : 0u, alpha_func, (uint32_t)draw.depth.alpha_ref,
-                   draw.blend.blend_enable ? 1u : 0u, (uint32_t)draw.blend.op,
-                   (uint32_t)draw.blend.src_factor, (uint32_t)draw.blend.dst_factor,
-                   draw.depth.depth_test_enable ? 1u : 0u, draw.depth.depth_write_enable ? 1u : 0u,
-                   (uint32_t)draw.depth.depth_func, (uint32_t)draw.cull_mode,
-                   viewport.x, viewport.y, viewport.width, viewport.height,
-                   scissor.x, scissor.y, scissor.width, scissor.height,
-                   has_fog ? 1u : 0u,
-                   min_x, min_y, max_x, max_y, min_z, max_z, u0, v0, u1, v1);
-        }
         // 6. Bind Pipeline State (Rasterizer, Depth/Stencil, Blend)
         DkRasterizerState rasterizerState;
         dkRasterizerStateDefaults(&rasterizerState);
@@ -3429,51 +3405,13 @@ RecompD3dPresenterError d3d_backend_submit(
             printf("[Deko3D] Frame %u: draws=%u tex_uploads=%u dyn_kb=%u\n",
                    presenter->frame_counter, presenter->draws_in_frame,
                    presenter->tex_uploads_in_frame, presenter->dyn_offset / 1024u);
-            if (g_sdiag.nonblack_clear || g_sdiag.sub_vp || g_sdiag.sub_scissor ||
-                g_sdiag.alpha_other || g_sdiag.fog_draws || g_sdiag.blendop_draws ||
-                g_sdiag.stencil_color || g_sdiag.ff_other) {
-                printf("[StageDiag] clr=%u(0x%08x) vp=%u(%.0f,%.0f,%.0f,%.0f) sc=%u(%u,%u,%u,%u) af=%u(%u,%u) fog=%u(m=%.0f,%.1f..%.1f,d=%.4f) bop=%u(%u,%u,%u) stc=%u ffo=%u(st=%u,ak=%u,fmt=0x%x)\n",
-                       g_sdiag.nonblack_clear, g_sdiag.last_clear_color,
-                       g_sdiag.sub_vp, g_sdiag.last_vp[0], g_sdiag.last_vp[1], g_sdiag.last_vp[2], g_sdiag.last_vp[3],
-                       g_sdiag.sub_scissor, g_sdiag.last_scissor[0], g_sdiag.last_scissor[1], g_sdiag.last_scissor[2], g_sdiag.last_scissor[3],
-                       g_sdiag.alpha_other, g_sdiag.last_alpha_func, g_sdiag.last_alpha_ref,
-                       g_sdiag.fog_draws, g_sdiag.last_fog_mode, g_sdiag.last_fog_start, g_sdiag.last_fog_end, g_sdiag.last_fog_dens,
-                       g_sdiag.blendop_draws, g_sdiag.last_blend_op, g_sdiag.last_blend_src, g_sdiag.last_blend_dst,
-                       g_sdiag.stencil_color, g_sdiag.ff_other, g_sdiag.last_ff_st, g_sdiag.last_ff_ak, g_sdiag.last_ff_fmt);
-            }
-            if (g_sdiag.fog_draws > 0u) {
-                printf("[ChurchDiag] comb_s1=%u(miss=%u,cin1=0x%08x,tm=0x%x,f0=0x%x,f1=0x%x) fog_c23_nonone=%u c23=(%.2f,%.2f,%.2f,%.2f) dfog=0x%08x fsh_col=%u(k=%u,st=%u,b=%u,%u,%u,tx=%u,fmt=0x%x)\n",
-                       g_sdiag.comb_s1_count, g_sdiag.s1_tex1_missing,
-                       g_sdiag.last_s1_cin1, g_sdiag.last_s1_tmode, g_sdiag.last_s1_fmt0, g_sdiag.last_s1_fmt1,
-                       g_sdiag.fog_c23_nonone,
-                       g_sdiag.last_c23[0], g_sdiag.last_c23[1], g_sdiag.last_c23[2], g_sdiag.last_c23[3],
-                       g_sdiag.last_draw_fog_color, g_sdiag.fsh_color_draws,
-                       g_sdiag.last_fc_kind, g_sdiag.last_fc_st, g_sdiag.last_fc_blend,
-                       g_sdiag.last_fc_src, g_sdiag.last_fc_dst, g_sdiag.last_fc_tex, g_sdiag.last_fc_fmt);
-            }
-            if (g_sdiag.offscreen_draws || g_sdiag.tex_upload_fails || g_sdiag.backbuf_tex_draws) {
-                printf("[TexDiag] offscreen=%u tex_fail=%u(fmt=0x%x,%ux%u) backbuf_tex=%u\n",
-                       g_sdiag.offscreen_draws, g_sdiag.tex_upload_fails,
-                       g_sdiag.last_fail_fmt, g_sdiag.last_fail_w, g_sdiag.last_fail_h,
-                       g_sdiag.backbuf_tex_draws);
-            }
             uint32_t prev_sub = g_sdiag.prev_sub_scissor_draws;
             uint32_t prev_miny = g_sdiag.prev_min_y;
             uint32_t prev_maxy = g_sdiag.prev_max_y;
-            static uint32_t s_draw_dumps_done = 0u;
-            static uint32_t s_last_dump_frame = 0u;
-            uint32_t next_dump = 0u;
-            if (s_draw_dumps_done < 3u && presenter->draws_in_frame >= 450u &&
-                presenter->frame_counter >= s_last_dump_frame + 240u) {
-                next_dump = presenter->frame_counter + 1u;
-                s_last_dump_frame = presenter->frame_counter;
-                ++s_draw_dumps_done;
-            }
             g_sdiag = StageDiagCounters{};
             g_sdiag.prev_sub_scissor_draws = prev_sub;
             g_sdiag.prev_min_y = prev_miny;
             g_sdiag.prev_max_y = prev_maxy;
-            if (next_dump != 0u) g_sdiag.dump_target_frame = next_dump;
             if (g_perf.frames > 1) {
                 double n = (double)g_perf.frames;
                 double wall_avg = perfMs(g_perf.wall_sum) / (n - 1.0);
@@ -3628,12 +3566,6 @@ RecompD3dPresenterError d3d_backend_submit(
                         const char *fname = (w.fsh < 6) ? s_fsh_names[w.fsh] : "?";
                         printf("   [TopGpuDraw #%d] %.2fms | cat=%s fsh=%s vtx=%u idx=%u tex=%ux%u (fmt=0x%x, mips=%u)\n",
                                k, w.ms, cname, fname, w.vtx, w.idx, w.tw, w.th, w.fmt, w.mips);
-                        if (w.fsh == 3 || w.fsh == 5) {
-                            printf("       -> comb: ctrl=0x%08x final0=0x%08x final1=0x%08x tmode=0x%08x | s0(cin=0x%08x cout=0x%08x ain=0x%08x aout=0x%08x) | s1(cin=0x%08x cout=0x%08x ain=0x%08x aout=0x%08x)\n",
-                                   w.c_control, w.c_final0, w.c_final1, w.c_tex_modes,
-                                   w.c_in[0], w.c_out[0], w.a_in[0], w.a_out[0],
-                                   w.c_in[1], w.c_out[1], w.a_in[1], w.a_out[1]);
-                        }
                     }
                 }
             }
@@ -3720,19 +3652,16 @@ RecompD3dPresenterError d3d_backend_destroy(RecompD3dPresenter **presenter) {
         }
         dkQueueWaitIdle(p->queue);
     }
-    if (p->swapchain) dkSwapchainDestroy(p->swapchain);
+    destroyResolutionResources(p);
     for (uint32_t i = 0; i < NUM_CMD_SLOTS; ++i) {
         if (p->cmdbuf[i]) dkCmdBufDestroy(p->cmdbuf[i]);
         if (p->block_dyn[i]) dkMemBlockDestroy(p->block_dyn[i]);
         if (p->block_cmd[i]) dkMemBlockDestroy(p->block_cmd[i]);
     }
     if (p->block_queries) dkMemBlockDestroy(p->block_queries);
-    if (p->block_gpu_copies) dkMemBlockDestroy(p->block_gpu_copies);
     if (p->block_tex) dkMemBlockDestroy(p->block_tex);
     if (p->block_desc) dkMemBlockDestroy(p->block_desc);
     if (p->block_code) dkMemBlockDestroy(p->block_code);
-    if (p->block_depth) dkMemBlockDestroy(p->block_depth);
-    if (p->block_framebuffers) dkMemBlockDestroy(p->block_framebuffers);
     if (p->queue) dkQueueDestroy(p->queue);
     if (p->device) dkDeviceDestroy(p->device);
 

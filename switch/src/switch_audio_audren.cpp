@@ -59,7 +59,7 @@ static std::atomic<int> s_audio_muted(0);
 static std::atomic<int> s_audio_paused(0);
 static uint64_t s_submit_counter = 0;
 static uint64_t s_wavebuf_counter = 0;
-static float s_final_mix_vol = 0.95f;
+static float s_final_mix_vol = 0.65f;
 
 // ---- Diagnostic counters (read by the Deko3D presenter's periodic perf report) ----
 static uint64_t s_perf_update_ticks = 0, s_perf_submit_ticks = 0, s_perf_flush_ticks = 0;
@@ -458,12 +458,9 @@ static void flushAudioInternal(void) {
     if (inst_sum_gain > s_adiag.peak_sum_gain) s_adiag.peak_sum_gain = inst_sum_gain;
     float rms_gain = std::sqrt(sum_sq);
     if (rms_gain > s_adiag.peak_rms_gain) s_adiag.peak_rms_gain = rms_gain;
-    // Evita saturacion del bus maestro de audren cuando 10-22 voces se solapan
-    // (peak_sum_gain hasta ~3.4x aunque rms_gain sea < 1.0).
-    float effective_load = std::max(rms_gain, inst_sum_gain * 0.58f);
-    float target_mix = std::clamp(1.05f / std::max(1.0f, effective_load), 0.45f, 0.92f);
-    float alpha = (target_mix < s_final_mix_vol) ? 0.50f : 0.03f;
-    s_final_mix_vol += (target_mix - s_final_mix_vol) * alpha;
+    // Volumen maestro fijo a 0.65f (sin ducking dinamico) para evitar que picos
+    // de suma >1.0 disparen el limitador/DRC de salida y mantenga volumen constante.
+    s_final_mix_vol = 0.65f;
     if (s_final_mix_vol < s_adiag.min_final_mix) s_adiag.min_final_mix = s_final_mix_vol;
     if (s_final_mix_vol > s_adiag.max_final_mix) s_adiag.max_final_mix = s_final_mix_vol;
     audrvMixSetVolume(&s_drv, AUDREN_FINAL_MIX_ID, s_final_mix_vol);
@@ -511,7 +508,7 @@ void recomp_audio_output_initialize(void) {
     // and audrvCreate's 3rd parameter is num_final_mix_channels (2 for stereo!).
     static const AudioRendererConfig config = {
         .output_rate = AudioRendererOutputRate_48kHz,
-        .num_voices = MAX_HW_VOICES,
+        .num_voices = MAX_HW_VOICES * 2, // 48 voice channels so 24 mono/stereo HW voices never exhaust channels
         .num_effects = 0,
         .num_sinks = 1,
         .num_mix_objs = 1,
