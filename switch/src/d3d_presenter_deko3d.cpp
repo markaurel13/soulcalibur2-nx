@@ -4,6 +4,8 @@
 #include "sc2_ff_shaders.h"
 #include "font8x8.h"
 #include "switch_watchdog.h"
+#include <switch.h>
+namespace SwitchInput { extern PadState s_pads[4]; }
 
 #include <switch.h>
 #include <deko3d.h>
@@ -18,6 +20,7 @@ extern "C" {
 void SwitchAudio_FlushPending(void);
 void SwitchAudio_TakePerf(uint64_t *update_ticks, uint64_t *submit_ticks, uint64_t *flush_ticks,
                           uint32_t *updates, uint32_t *submits);
+void SwitchAudio_PrintAndResetDiag(void);
 void Switch_TakeGuestPerf(uint64_t *d3d8_submit, uint64_t *dsound_pump,
                           uint64_t *dsound_hrtf, uint32_t *submits,
                           uint32_t *pumps, uint32_t *hrtfs,
@@ -684,6 +687,149 @@ static void buildMortonLUT(uint32_t width, uint32_t height, uint32_t mx[2048], u
     }
 }
 
+static void decodeDxt1ToBgra8(const uint8_t *src, uint32_t w, uint32_t h, uint32_t *dst) {
+    uint32_t bw = (w + 3u) / 4u;
+    uint32_t bh = (h + 3u) / 4u;
+    auto rgb565ToBgra = [](uint16_t c, uint8_t a) -> uint32_t {
+        uint8_t r = (uint8_t)(((c >> 11) & 0x1Fu) * 255u / 31u);
+        uint8_t g = (uint8_t)(((c >> 5) & 0x3Fu) * 255u / 63u);
+        uint8_t b = (uint8_t)((c & 0x1Fu) * 255u / 31u);
+        return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    };
+    auto lerpBgra = [](uint32_t c0, uint32_t c1, uint32_t w0, uint32_t w1, uint32_t div) -> uint32_t {
+        uint32_t r = (((c0 >> 16) & 0xFFu) * w0 + ((c1 >> 16) & 0xFFu) * w1) / div;
+        uint32_t g = (((c0 >> 8) & 0xFFu) * w0 + ((c1 >> 8) & 0xFFu) * w1) / div;
+        uint32_t b = ((c0 & 0xFFu) * w0 + (c1 & 0xFFu) * w1) / div;
+        return 0xFF000000u | (r << 16) | (g << 8) | b;
+    };
+    for (uint32_t by = 0; by < bh; ++by) {
+        for (uint32_t bx = 0; bx < bw; ++bx) {
+            const uint8_t *blk = src + (by * bw + bx) * 8u;
+            uint16_t c0 = (uint16_t)blk[0] | ((uint16_t)blk[1] << 8);
+            uint16_t c1 = (uint16_t)blk[2] | ((uint16_t)blk[3] << 8);
+            uint32_t idx = (uint32_t)blk[4] | ((uint32_t)blk[5] << 8) | ((uint32_t)blk[6] << 16) | ((uint32_t)blk[7] << 24);
+            uint32_t pal[4];
+            pal[0] = rgb565ToBgra(c0, 0xFFu);
+            pal[1] = rgb565ToBgra(c1, 0xFFu);
+            if (c0 > c1) {
+                pal[2] = lerpBgra(pal[0], pal[1], 2u, 1u, 3u);
+                pal[3] = lerpBgra(pal[0], pal[1], 1u, 2u, 3u);
+            } else {
+                pal[2] = lerpBgra(pal[0], pal[1], 1u, 1u, 2u);
+                pal[3] = 0x00000000u;
+            }
+            for (uint32_t py = 0; py < 4u; ++py) {
+                uint32_t y = by * 4u + py;
+                if (y >= h) break;
+                for (uint32_t px = 0; px < 4u; ++px) {
+                    uint32_t x = bx * 4u + px;
+                    uint32_t code = (idx >> ((py * 4u + px) * 2u)) & 3u;
+                    if (x < w) dst[y * w + x] = pal[code];
+                }
+            }
+        }
+    }
+}
+
+static void decodeDxt3ToBgra8(const uint8_t *src, uint32_t w, uint32_t h, uint32_t *dst) {
+    uint32_t bw = (w + 3u) / 4u;
+    uint32_t bh = (h + 3u) / 4u;
+    auto rgb565ToRgb = [](uint16_t c) -> uint32_t {
+        uint8_t r = (uint8_t)(((c >> 11) & 0x1Fu) * 255u / 31u);
+        uint8_t g = (uint8_t)(((c >> 5) & 0x3Fu) * 255u / 63u);
+        uint8_t b = (uint8_t)((c & 0x1Fu) * 255u / 31u);
+        return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    };
+    auto lerpRgb = [](uint32_t c0, uint32_t c1, uint32_t w0, uint32_t w1, uint32_t div) -> uint32_t {
+        uint32_t r = (((c0 >> 16) & 0xFFu) * w0 + ((c1 >> 16) & 0xFFu) * w1) / div;
+        uint32_t g = (((c0 >> 8) & 0xFFu) * w0 + ((c1 >> 8) & 0xFFu) * w1) / div;
+        uint32_t b = ((c0 & 0xFFu) * w0 + (c1 & 0xFFu) * w1) / div;
+        return (r << 16) | (g << 8) | b;
+    };
+    for (uint32_t by = 0; by < bh; ++by) {
+        for (uint32_t bx = 0; bx < bw; ++bx) {
+            const uint8_t *blk = src + (by * bw + bx) * 16u;
+            uint64_t alpha64 = 0;
+            memcpy(&alpha64, blk, 8);
+            const uint8_t *cblk = blk + 8;
+            uint16_t c0 = (uint16_t)cblk[0] | ((uint16_t)cblk[1] << 8);
+            uint16_t c1 = (uint16_t)cblk[2] | ((uint16_t)cblk[3] << 8);
+            uint32_t idx = (uint32_t)cblk[4] | ((uint32_t)cblk[5] << 8) | ((uint32_t)cblk[6] << 16) | ((uint32_t)cblk[7] << 24);
+            uint32_t pal[4];
+            pal[0] = rgb565ToRgb(c0);
+            pal[1] = rgb565ToRgb(c1);
+            pal[2] = lerpRgb(pal[0], pal[1], 2u, 1u, 3u);
+            pal[3] = lerpRgb(pal[0], pal[1], 1u, 2u, 3u);
+            for (uint32_t py = 0; py < 4u; ++py) {
+                uint32_t y = by * 4u + py;
+                if (y >= h) break;
+                for (uint32_t px = 0; px < 4u; ++px) {
+                    uint32_t x = bx * 4u + px;
+                    uint32_t p = py * 4u + px;
+                    uint32_t a4 = (uint32_t)((alpha64 >> (p * 4u)) & 0xFu);
+                    uint32_t a8 = (a4 << 4) | a4;
+                    uint32_t code = (idx >> (p * 2u)) & 3u;
+                    if (x < w) dst[y * w + x] = (a8 << 24) | pal[code];
+                }
+            }
+        }
+    }
+}
+
+static void decodeDxt5ToBgra8(const uint8_t *src, uint32_t w, uint32_t h, uint32_t *dst) {
+    uint32_t bw = (w + 3u) / 4u;
+    uint32_t bh = (h + 3u) / 4u;
+    auto rgb565ToRgb = [](uint16_t c) -> uint32_t {
+        uint8_t r = (uint8_t)(((c >> 11) & 0x1Fu) * 255u / 31u);
+        uint8_t g = (uint8_t)(((c >> 5) & 0x3Fu) * 255u / 63u);
+        uint8_t b = (uint8_t)((c & 0x1Fu) * 255u / 31u);
+        return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    };
+    auto lerpRgb = [](uint32_t c0, uint32_t c1, uint32_t w0, uint32_t w1, uint32_t div) -> uint32_t {
+        uint32_t r = (((c0 >> 16) & 0xFFu) * w0 + ((c1 >> 16) & 0xFFu) * w1) / div;
+        uint32_t g = (((c0 >> 8) & 0xFFu) * w0 + ((c1 >> 8) & 0xFFu) * w1) / div;
+        uint32_t b = ((c0 & 0xFFu) * w0 + (c1 & 0xFFu) * w1) / div;
+        return (r << 16) | (g << 8) | b;
+    };
+    for (uint32_t by = 0; by < bh; ++by) {
+        for (uint32_t bx = 0; bx < bw; ++bx) {
+            const uint8_t *blk = src + (by * bw + bx) * 16u;
+            uint8_t a[8];
+            a[0] = blk[0];
+            a[1] = blk[1];
+            if (a[0] > a[1]) {
+                for (int i = 1; i <= 6; ++i) a[1 + i] = (uint8_t)(((7 - i) * a[0] + i * a[1]) / 7);
+            } else {
+                for (int i = 1; i <= 4; ++i) a[1 + i] = (uint8_t)(((5 - i) * a[0] + i * a[1]) / 5);
+                a[6] = 0;
+                a[7] = 255;
+            }
+            uint64_t aidx = 0;
+            memcpy(&aidx, blk + 2, 6);
+            const uint8_t *cblk = blk + 8;
+            uint16_t c0 = (uint16_t)cblk[0] | ((uint16_t)cblk[1] << 8);
+            uint16_t c1 = (uint16_t)cblk[2] | ((uint16_t)cblk[3] << 8);
+            uint32_t idx = (uint32_t)cblk[4] | ((uint32_t)cblk[5] << 8) | ((uint32_t)cblk[6] << 16) | ((uint32_t)cblk[7] << 24);
+            uint32_t pal[4];
+            pal[0] = rgb565ToRgb(c0);
+            pal[1] = rgb565ToRgb(c1);
+            pal[2] = lerpRgb(pal[0], pal[1], 2u, 1u, 3u);
+            pal[3] = lerpRgb(pal[0], pal[1], 1u, 2u, 3u);
+            for (uint32_t py = 0; py < 4u; ++py) {
+                uint32_t y = by * 4u + py;
+                if (y >= h) break;
+                for (uint32_t px = 0; px < 4u; ++px) {
+                    uint32_t x = bx * 4u + px;
+                    uint32_t p = py * 4u + px;
+                    uint32_t a8 = a[(aidx >> (p * 3u)) & 7u];
+                    uint32_t code = (idx >> (p * 2u)) & 3u;
+                    if (x < w) dst[y * w + x] = (a8 << 24) | pal[code];
+                }
+            }
+        }
+    }
+}
+
 static uint32_t lookupOrUploadSingleTexture(
     RecompD3dPresenter *p,
     const RecompD3dTextureDesc &desc,
@@ -705,7 +851,11 @@ static uint32_t lookupOrUploadSingleTexture(
     const bool dxt1 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_DXT1);
     const bool dxt3 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_DXT3);
     const bool dxt5 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_DXT5);
-    const bool compressed = (dxt1 || dxt3 || dxt5);
+    const bool any_bc = (dxt1 || dxt3 || dxt5);
+    // Deko3D CopyBufferToImage corrupts/drops blocks on narrow BCn textures (width < 128);
+    // decode them on CPU to BGRA8 so they upload via the linear BGRA8 path.
+    const bool small_bc_cpu = any_bc && (desc.width < 128u);
+    const bool compressed = (any_bc && !small_bc_cpu);
 
     uint64_t t_tex_start = perfNow();
     uint64_t fp = quickFingerprint(tex_bytes, tex_byte_count);
@@ -730,7 +880,6 @@ static uint32_t lookupOrUploadSingleTexture(
     uint32_t upload_size = 0;
     uint32_t copy_w = desc.width;
     uint32_t copy_h = desc.height;
-    uint32_t copy_row_len = 0;
 
     if (compressed) {
         uint32_t block_bytes = dxt1 ? 8u : 16u;
@@ -742,7 +891,6 @@ static uint32_t lookupOrUploadSingleTexture(
         dk_fmt = dxt1 ? DkImageFormat_RGBA_BC1 : (dxt3 ? DkImageFormat_RGBA_BC2 : DkImageFormat_RGBA_BC3);
         copy_w = bw * 4u;
         copy_h = bh * 4u;
-        copy_row_len = 0; // Let Deko3D compute BC row stride automatically
 
         p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
         if (p->dyn_offset + upload_size + 65536u > DYN_BUF_SIZE) {
@@ -812,7 +960,14 @@ static uint32_t lookupOrUploadSingleTexture(
     uint32_t stage_offset = p->dyn_offset;
     uint8_t *dst_bgra = dyn_cpu + stage_offset;
 
-    if (palettized) {
+    if (small_bc_cpu) {
+        uint32_t block_bytes = dxt1 ? 8u : 16u;
+        uint32_t need = ((desc.width + 3u) / 4u) * ((desc.height + 3u) / 4u) * block_bytes;
+        if (need > tex_byte_count) return 0;
+        if (dxt1) decodeDxt1ToBgra8((const uint8_t *)tex_bytes, desc.width, desc.height, (uint32_t *)dst_bgra);
+        else if (dxt3) decodeDxt3ToBgra8((const uint8_t *)tex_bytes, desc.width, desc.height, (uint32_t *)dst_bgra);
+        else decodeDxt5ToBgra8((const uint8_t *)tex_bytes, desc.width, desc.height, (uint32_t *)dst_bgra);
+    } else if (palettized) {
         if (texels > tex_byte_count || !isPow2U32(desc.width) || !isPow2U32(desc.height)) return 0;
         uint32_t mx[2048], my[2048];
         buildMortonLUT(desc.width, desc.height, mx, my);
@@ -1908,6 +2063,9 @@ struct StageDiagCounters {
     uint32_t last_fc_fmt = 0;
 };
 static StageDiagCounters g_sdiag;
+static uint32_t s_cur_clear_color = 0u;
+static uint32_t s_lb_min_y = 0u;
+static uint32_t s_lb_max_y = 0u;
 
 RecompD3dPresenterError d3d_backend_submit(
     RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command) {
@@ -1935,6 +2093,7 @@ RecompD3dPresenterError d3d_backend_submit(
 
         if (command->data.clear.clear_color) {
             uint32_t c = command->data.clear.color;
+            s_cur_clear_color = c;
             if ((c & 0x00FFFFFFu) != 0u) {
                 ++g_sdiag.nonblack_clear;
                 g_sdiag.last_clear_color = c;
@@ -1943,11 +2102,9 @@ RecompD3dPresenterError d3d_backend_submit(
             float r = ((c >> 16) & 0xFF) / 255.0f;
             float g = ((c >> 8) & 0xFF) / 255.0f;
             float b = (c & 0xFF) / 255.0f;
-            if (g_sdiag.prev_sub_scissor_draws > 10u && (c & 0x00FFFFFFu) != 0u &&
-                g_sdiag.prev_max_y > g_sdiag.prev_min_y) {
+            if ((c & 0x00FFFFFFu) != 0u && s_lb_max_y > s_lb_min_y) {
                 dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
-                DkScissor lb_scissor = { 0, g_sdiag.prev_min_y, presenter->width,
-                                         g_sdiag.prev_max_y - g_sdiag.prev_min_y };
+                DkScissor lb_scissor = { 0, s_lb_min_y, presenter->width, s_lb_max_y - s_lb_min_y };
                 dkCmdBufSetScissors(cmd, 0, &lb_scissor, 1);
                 dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, r, g, b, a);
                 dkCmdBufSetScissors(cmd, 0, &full_scissor, 1);
@@ -2626,7 +2783,16 @@ RecompD3dPresenterError d3d_backend_submit(
             }
             ++g_perf.fsh_fast;
         } else if (pp.kind == RECOMP_D3D_PIXEL_COMBINERS && (pp.combiners.control & 0xFFu) <= 2u) {
-            if (draw.has_texture && isSc2FastCombiner(pp.combiners)) {
+            const bool is_untex_fast_comb = !draw.has_texture
+                && (pp.combiners.control & 0xFFu) == 1u
+                && pp.combiners.texture_modes == 0u
+                && pp.combiners.color_input[0] == 0xc420c520u
+                && pp.combiners.color_output[0] == 0x00010c00u
+                && pp.combiners.alpha_input[0] == 0xd4d11010u
+                && pp.combiners.alpha_output[0] == 0x000000c0u
+                && pp.combiners.final0 == 0x130c0300u
+                && pp.combiners.final1 == 0x00001c80u;
+            if ((draw.has_texture && isSc2FastCombiner(pp.combiners)) || is_untex_fast_comb) {
                 chosen_fsh = &presenter->fsh_comb_fast;
                 num_textures = 2;
                 ++g_perf.fsh_comb_fast_count;
@@ -2962,6 +3128,26 @@ RecompD3dPresenterError d3d_backend_submit(
             s_last_fps_update_tick = now_fps_tick;
         }
 
+        if (presenter->draws_in_frame == 0u && (s_cur_clear_color & 0x00FFFFFFu) != 0u) {
+            if (presenter->last_presented_slot >= 0 &&
+                presenter->last_presented_slot != presenter->current_slot) {
+                DkImageRect full_rect = { 0, 0, 0, presenter->width, presenter->height, 1 };
+                dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+                dkCmdBufBlitImage(cmd, &presenter->framebuffer_views[presenter->last_presented_slot], &full_rect,
+                                  &presenter->framebuffer_views[presenter->current_slot], &full_rect,
+                                  DkBlitFlag_FilterNearest, 0);
+                dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+            } else {
+                DkScissor full_sc = { 0, 0, presenter->width, presenter->height };
+                dkCmdBufSetScissors(cmd, 0, &full_sc, 1);
+                dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
+            }
+        } else if (presenter->draws_in_frame <= 40u && (s_cur_clear_color & 0x00FFFFFFu) != 0u) {
+            DkScissor full_sc = { 0, 0, presenter->width, presenter->height };
+            dkCmdBufSetScissors(cmd, 0, &full_sc, 1);
+            dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
+        }
+
         if (Switch_IsFpsOverlayEnabled()) {
             drawFpsOverlay(presenter, cmd, s_overlay_fps, s_overlay_ms);
             if (presenter->query_count[slot] < MAX_GPU_QUERIES) {
@@ -3051,6 +3237,10 @@ RecompD3dPresenterError d3d_backend_submit(
             ++g_perf.frames;
             if (presenter->draws_in_frame > g_perf.max_draws) g_perf.max_draws = presenter->draws_in_frame;
         }
+        if (g_sdiag.cur_sub_scissor_draws > 0u && g_sdiag.cur_max_y > g_sdiag.cur_min_y) {
+            s_lb_min_y = g_sdiag.cur_min_y;
+            s_lb_max_y = g_sdiag.cur_max_y;
+        }
         g_sdiag.prev_sub_scissor_draws = g_sdiag.cur_sub_scissor_draws;
         g_sdiag.prev_min_y = g_sdiag.cur_min_y;
         g_sdiag.prev_max_y = g_sdiag.cur_max_y;
@@ -3092,15 +3282,7 @@ RecompD3dPresenterError d3d_backend_submit(
             uint32_t prev_sub = g_sdiag.prev_sub_scissor_draws;
             uint32_t prev_miny = g_sdiag.prev_min_y;
             uint32_t prev_maxy = g_sdiag.prev_max_y;
-            uint32_t next_dump = g_sdiag.dump_target_frame;
-            if (g_sdiag.dump_cf_logs > 0u) {
-                next_dump = 0xFFFFFFFFu;
-            } else if (next_dump != 0xFFFFFFFFu && presenter->frame_counter > next_dump) {
-                next_dump = 0u;
-            }
-            if (next_dump == 0u && g_sdiag.fog_draws > 10000u && g_sdiag.last_clear_color == 0xff98a1aa) {
-                next_dump = presenter->frame_counter + 5u;
-            }
+            uint32_t next_dump = 0u;
             g_sdiag = StageDiagCounters{};
             g_sdiag.prev_sub_scissor_draws = prev_sub;
             g_sdiag.prev_min_y = prev_miny;
@@ -3153,6 +3335,7 @@ RecompD3dPresenterError d3d_backend_submit(
                 printf("[Perf] audio (total in %u frames): updates=%u (%.2f ms total, %.3f ms each) submits=%u (%.2f ms) flush=%.2f ms\n",
                        g_perf.frames, au_nup, perfMs(au_up), au_nup ? perfMs(au_up) / au_nup : 0.0,
                        au_nsub, perfMs(au_sub), perfMs(au_flush));
+                SwitchAudio_PrintAndResetDiag();
 
                 uint64_t g_sub = 0, g_pump = 0, g_hrtf = 0, g_draw_adap = 0, g_shadow_push = 0, g_vblank = 0, g_pres_wait = 0;
                 uint64_t g_lookup_t = 0, g_x87_t = 0;
