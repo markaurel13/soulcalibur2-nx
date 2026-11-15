@@ -22,12 +22,34 @@
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: radial-gradient(circle at top, #181e33 0%, var(--bg) 60%);
+      background:
+        radial-gradient(circle at 18% 15%, rgba(230, 0, 18, 0.16) 0%, transparent 45%),
+        radial-gradient(circle at 82% 20%, rgba(245, 196, 81, 0.14) 0%, transparent 45%),
+        radial-gradient(circle at 50% 85%, rgba(45, 110, 220, 0.12) 0%, transparent 50%),
+        #080a10;
       color: var(--text);
       min-height: 100vh;
       padding: 32px 16px 64px;
+      position: relative;
+      overflow-x: hidden;
     }
-    .container { max-width: 860px; margin: 0 auto; }
+    .bg-watermark {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .bg-watermark svg {
+      width: min(92vw, 980px);
+      height: auto;
+      opacity: 0.055;
+      filter: drop-shadow(0 0 40px rgba(245, 196, 81, 0.25));
+    }
+    .container { max-width: 860px; margin: 0 auto; position: relative; z-index: 1; }
     header { text-align: center; margin-bottom: 28px; }
     header img {
       width: 120px; height: 120px; border-radius: 20px;
@@ -64,11 +86,14 @@
     .btn-gold { background: var(--gold); color: #111; }
     .btn-secondary { background: #232a40; color: var(--text); border: 1px solid var(--border); }
     .card {
-      background: var(--card);
+      background: rgba(19, 23, 36, 0.84);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       border: 1px solid var(--border);
       border-radius: 16px;
       padding: 20px;
       margin-bottom: 18px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
     }
     .card h2 { margin: 0 0 8px; font-size: 1.15rem; display: flex; align-items: center; gap: 8px; }
     .card p { margin: 0 0 14px; color: var(--muted); font-size: 0.92rem; }
@@ -126,6 +151,17 @@
   </style>
 </head>
 <body>
+  <div class="bg-watermark" aria-hidden="true">
+    <svg viewBox="0 0 800 500" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- Crossed Soul Blades & Crest Watermark -->
+      <circle cx="400" cy="240" r="175" stroke="#f5c451" stroke-width="3" stroke-dasharray="14 8" />
+      <circle cx="400" cy="240" r="145" stroke="#e60012" stroke-width="2" />
+      <path d="M165 405 L615 75 L635 95 L185 425 Z" fill="#f5c451" />
+      <path d="M635 405 L185 75 L165 95 L615 425 Z" fill="#e60012" />
+      <polygon points="400,45 430,240 400,435 370,240" fill="#eef1f8" />
+      <text x="400" y="475" text-anchor="middle" fill="#f5c451" font-family="Georgia, serif" font-size="38" font-weight="700" letter-spacing="14">SOULCALIBUR II</text>
+    </svg>
+  </div>
   <div class="container">
     <header>
       <img src="https://raw.githubusercontent.com/markaurel13/soulcalibur2-nx/switch-port/switch/assets/icon.jpg" alt="Soulcalibur II NX" />
