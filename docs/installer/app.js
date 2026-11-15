@@ -98,6 +98,16 @@ function updateUI() {
 
   const canBuild = readyXbox && readyGc && readyPs2;
   $("btn-build-zip").disabled = !canBuild;
+
+  const hint = $("final-size-hint");
+  if (readyXbox) {
+    const xboxBytes = reqKeys.reduce((acc, k) => acc + state.xbox[k].blob.size, 0);
+    const guestsBytes = state.guestsBlob ? state.guestsBlob.size : 720 * 1024 * 1024;
+    const prefix = state.guestsBlob ? "Final Switch package size" : "Estimated final Switch size";
+    hint.textContent = `${prefix}: ~${formatBytes(xboxBytes + guestsBytes)}`;
+  } else {
+    hint.textContent = "Estimated final Switch size: ~2.1 GB";
+  }
 }
 
 // ---- 1. Handle Xbox Disc ----
