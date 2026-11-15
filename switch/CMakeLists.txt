@@ -152,6 +152,7 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_sub_61b10.c
     src/switch_sub_7ca00.c
     src/switch_sub_843d0.c
+    src/switch_sub_hot.c
     src/switch_sub_2b670.c
     src/switch_bone_neon.c
     src/switch_math_neon.c
@@ -333,6 +334,7 @@ target_link_options(soulcalibur2
     -Wl,--wrap=recomp_d3d8_draw_lookup_manual
     -Wl,--wrap=recomp_d3d_wait_vblank
     -Wl,--wrap=recomp_d3d_wait_present
+    -Wl,--wrap=recomp_kernel_wait_for_vblank
     -Wl,--wrap=recomp_lookup
     -Wl,--wrap=recomp_lookup_manual
     -Wl,--wrap=recomp_dispatch_indirect_site
@@ -350,6 +352,7 @@ target_link_options(soulcalibur2
     -Wl,--wrap=sub_00067D70
     -Wl,--wrap=sub_00069680
     -Wl,--wrap=sub_000688E0
+    -Wl,--wrap=sub_00040580
     -Wl,--wrap=sub_00063100
     -Wl,--wrap=sub_0003EE30
     -Wl,--wrap=sub_000343A0
@@ -365,6 +368,9 @@ target_link_options(soulcalibur2
     -Wl,--wrap=sub_00041550
     -Wl,--wrap=sub_000496E0
     -Wl,--wrap=sub_00040670
+    -Wl,--wrap=sub_000477A0
+    -Wl,--wrap=sub_00023840
+    -Wl,--wrap=sub_000200B0
     $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00012AB0>
     $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00014B90>
     $<$<BOOL:${SC2_GUEST_PROF}>:-Wl,--wrap=sub_00024E10>

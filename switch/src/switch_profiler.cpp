@@ -134,11 +134,11 @@ static void sc2_phase0_report(void);
 
 // ---- PreDraw callee profiler (inclusive ticks via cntpct_el0) ----
 #define SC2_PREDRAW_PROF_LIST(X) \
-    X(00067D70) X(00069680) X(000688E0) X(00063100) \
+    X(00069680) X(00063100) \
     X(0003EE30) X(000343A0) X(0003D9A0) X(0003D9F0) \
     X(00046EA0) X(000423B0) X(0003FCF0) X(00042A80) \
     X(00048780) X(00048C00) X(00041120) X(00041550) \
-    X(000496E0) X(00040670)
+    X(000496E0)
 
 struct PreDrawProfEntry {
     const char *name;
@@ -185,6 +185,23 @@ void __wrap_sub_00069370(void) {
     s_pd_00069370.calls++;
 }
 
+#define SC2_PD_FAST_DECL(fn) \
+    static PreDrawProfEntry s_pd_##fn = { "sub_" #fn, 0, 0 }; \
+    void sc2_fast_sub_##fn(void); \
+    void __wrap_sub_##fn(void) { \
+        uint64_t t0 = armGetSystemTick(); \
+        sc2_fast_sub_##fn(); \
+        s_pd_##fn.ticks += (armGetSystemTick() - t0); \
+        s_pd_##fn.calls++; \
+    }
+SC2_PD_FAST_DECL(00067D70)
+SC2_PD_FAST_DECL(000688E0)
+SC2_PD_FAST_DECL(00040670)
+SC2_PD_FAST_DECL(000477A0)
+SC2_PD_FAST_DECL(00023840)
+SC2_PD_FAST_DECL(000200B0)
+#undef SC2_PD_FAST_DECL
+
 static PreDrawProfEntry s_pd_000843D0 = { "sub_000843D0", 0, 0 };
 void sc2_fast_sub_000843D0(void);
 static void sc2_wrap_843d0_timed(void) {
@@ -196,6 +213,8 @@ static void sc2_wrap_843d0_timed(void) {
 
 static PreDrawProfEntry* const s_pd_entries[] = {
     &s_pd_0004B630, &s_pd_0004D090, &s_pd_00069370, &s_pd_000843D0,
+    &s_pd_00067D70, &s_pd_000688E0, &s_pd_00040670,
+    &s_pd_000477A0, &s_pd_00023840, &s_pd_000200B0,
 #define SC2_PD_PTR(fn) &s_pd_##fn,
 SC2_PREDRAW_PROF_LIST(SC2_PD_PTR)
 #undef SC2_PD_PTR
@@ -255,11 +274,37 @@ static void sc2_phase0_report(void) {
     frames = 0; s_lk_calls = s_lk_null = s_ind_calls = 0;
 }
 
-// ---- Wrap recomp_d3d_wait_present ----
+// ---- Wrap recomp_d3d_wait_present & recomp_kernel_wait_for_vblank ----
+static bool s_in_wait_present = false;
+uint64_t recomp_xapi_performance_counter(void);
+extern bool (*recomp_xapi_fast_forward)(void);
+
+void __real_recomp_kernel_wait_for_vblank(uint64_t deadline_ns);
+void __wrap_recomp_kernel_wait_for_vblank(uint64_t deadline_ns) {
+    __real_recomp_kernel_wait_for_vblank(deadline_ns);
+    if (!s_in_wait_present) return;
+    if (recomp_xapi_fast_forward && recomp_xapi_fast_forward()) return;
+
+    uint64_t now_ns = recomp_xapi_performance_counter();
+    if (now_ns >= deadline_ns) return;
+
+    uint64_t rem_ns = deadline_ns - now_ns;
+    // Leave a 2.0 ms spin margin so Horizon's svcSleepThread wakeup jitter
+    // does not overshoot the 16.666 ms deadline.
+    if (rem_ns > 2500000ULL) {
+        svcSleepThread((s64)(rem_ns - 2000000ULL));
+    }
+    while (recomp_xapi_performance_counter() < deadline_ns) {
+        __asm__ __volatile__("yield");
+    }
+}
+
 void __real_recomp_d3d_wait_present(void);
 void __wrap_recomp_d3d_wait_present(void) {
     uint64_t t0 = armGetSystemTick();
+    s_in_wait_present = true;
     __real_recomp_d3d_wait_present();
+    s_in_wait_present = false;
     uint64_t t1 = armGetSystemTick();
     uint64_t wait_dt = t1 - t0;
     if (s_gp.prev_exit != 0) {
