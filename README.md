@@ -18,13 +18,10 @@ Unlike traditional emulation, the original game runs natively on Nintendo Switch
 ## ✨ Features
 
 - **Full-Speed 60 FPS on Stock Clocks:** Plays smoothly at 60 FPS in both Handheld and Docked modes with zero overclocking required.
-- **Native 1080p Docked / 720p Handheld:**
-  - **Docked (TV Mode):** Crisp **1920x1080 Full HD** output.
-  - **Handheld Mode:** Native **1280x720** screen resolution.
-  - **Seamless Switching:** Automatically adapts resolution in real time when you dock or undock the console.
-- **Faithful Xbox Visuals:** Dynamic lighting, real-time shadows, stage effects, and character models rendered natively on Switch hardware.
+- **16:9 Native Widescreen**
+- **Faithful Xbox Visuals:** Dynamic lighting, real-time shadows, stage effects, and character models rendered natively on Switch hardware at Full HD.
 - **Original Audio & Full FMV Cutscenes:** Crisp stereo sound, character voices, background music, and full video cinematics (`movie.afs` & `bgm.afs`).
-- **2-Player Local Battles:** Challenge friends in VS mode using Handheld, Pro Controllers, or Joy-Cons.
+- **2-Player Local Battles:** Challenge friends in VS mode using Handheld, Gamepad, or Joy-Cons.
 - **All Classic Modes Included:** Arcade, VS Battle, Team Battle, Time Attack, Survival, Practice, and Weapon Master, with automatic saving to your microSD card.
 
 ---
