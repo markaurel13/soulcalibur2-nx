@@ -79,7 +79,7 @@
     .dropzone input { display: none; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     @media (max-width: 680px) { .grid-2 { grid-template-columns: 1fr; } }
-    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; justify-content: center; }
     .pill {
       font-size: 0.82rem; padding: 4px 10px; border-radius: 999px;
       background: #1d2336; border: 1px solid var(--border);
@@ -87,7 +87,7 @@
     .pill.ok { border-color: rgba(46, 204, 113, 0.5); color: var(--ok); }
     .pill.missing { border-color: rgba(231, 76, 60, 0.4); color: #ff8787; }
     .pill.muted { color: var(--muted); }
-    .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; justify-content: center; }
     .progress-outer {
       width: 100%; height: 10px; background: #1c2235; border-radius: 999px;
       overflow: hidden; margin-top: 14px;
@@ -159,7 +159,6 @@
 
     <section class="card">
       <h2>3. Build Switch Package</h2>
-      <p>Generates your ready-to-extract Switch package (<code>switch/soulcalibur2/</code>) and downloads it automatically to your PC.</p>
       <div class="actions">
         <button id="btn-build-zip" class="btn btn-primary" disabled>⚡ Build Switch Package</button>
       </div>
