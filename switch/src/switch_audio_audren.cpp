@@ -1,4 +1,5 @@
 #include "audio_output.h"
+#include "switch_core_manager.h"
 #include <switch.h>
 #include <cstdio>
 #include <cstdlib>
@@ -339,13 +340,11 @@ static int acquireHwVoice(uint32_t guest_slot, uint32_t sample_rate, uint32_t ds
     return chosen;
 }
 
-extern "C" {
-
-void SwitchAudio_FlushPending(void) {
+static void flushAudioInternal(void) {
     if (!s_audio_initialized) return;
     PerfScope perf_scope(&s_perf_flush_ticks);
     ScopedAudioMutex lock;
-    float sum_gain = 0.0f;
+    float sum_sq = 0.0f;
     for (int i = 0; i < MAX_HW_VOICES; ++i) {
         if (!s_hw_voices[i].active) continue;
         if (s_hw_voices[i].staging_frames > 0 && countActiveWavebufs(s_hw_voices[i]) < 4) {
@@ -354,11 +353,13 @@ void SwitchAudio_FlushPending(void) {
         if (audrvVoiceIsPlaying(&s_drv, i)) {
             float dg = (s_hw_voices[i].last_vol_db <= -9600) ? 0.0f :
                        (s_hw_voices[i].last_vol_db < 0 ? std::pow(10.0f, (float)s_hw_voices[i].last_vol_db / 2000.0f) : 1.0f);
-            sum_gain += dg * std::max(s_hw_voices[i].dry_left, s_hw_voices[i].dry_right);
+            float g = dg * std::max(s_hw_voices[i].dry_left, s_hw_voices[i].dry_right);
+            sum_sq += g * g;
         }
     }
-    float target_mix = std::min(0.95f, 1.40f / std::max(1.0f, sum_gain));
-    float alpha = (target_mix < s_final_mix_vol) ? 0.50f : 0.04f;
+    float rms_gain = std::sqrt(sum_sq);
+    float target_mix = std::max(0.78f, std::min(0.95f, 1.25f / std::max(1.0f, rms_gain)));
+    float alpha = (target_mix < s_final_mix_vol) ? 0.25f : 0.05f;
     s_final_mix_vol += (target_mix - s_final_mix_vol) * alpha;
     audrvMixSetVolume(&s_drv, AUDREN_FINAL_MIX_ID, s_final_mix_vol);
 
@@ -368,6 +369,26 @@ void SwitchAudio_FlushPending(void) {
         s_last_audrv_tick = now;
         perfAudrvUpdate();
     }
+}
+
+static Thread s_audio_flush_thread;
+alignas(0x1000) static uint8_t s_audio_flush_stack[0x10000];
+static std::atomic<bool> s_audio_flush_running{false};
+static std::atomic<bool> s_audio_flush_thread_active{false};
+
+static void audioFlushWorker(void*) {
+    while (s_audio_flush_running.load(std::memory_order_acquire)) {
+        svcSleepThread(10000000ULL); // 10 ms
+        if (!s_audio_flush_running.load(std::memory_order_acquire)) break;
+        flushAudioInternal();
+    }
+}
+
+extern "C" {
+
+void SwitchAudio_FlushPending(void) {
+    if (s_audio_flush_thread_active.load(std::memory_order_acquire)) return;
+    flushAudioInternal();
 }
 
 uint32_t recomp_audio_output_speakers(void) {
@@ -443,9 +464,29 @@ void recomp_audio_output_initialize(void) {
 
     s_audio_initialized = true;
     printf("[SwitchAudio] Native audio renderer online (48 kHz stereo, %d HW voices, 8MB pool).\n", MAX_HW_VOICES);
+
+    const int sys_core = SwitchCore_GetSystemCore();
+    if (sys_core >= 0) {
+        s_audio_flush_running.store(true, std::memory_order_release);
+        Result trc = threadCreate(&s_audio_flush_thread, audioFlushWorker, nullptr,
+                                  s_audio_flush_stack, sizeof(s_audio_flush_stack), 0x2A, sys_core);
+        if (R_SUCCEEDED(trc)) {
+            threadStart(&s_audio_flush_thread);
+            s_audio_flush_thread_active.store(true, std::memory_order_release);
+            printf("[SwitchAudio] Dedicated audio flush thread started on Core %d (Prio 0x2A).\n", sys_core);
+        } else {
+            s_audio_flush_running.store(false, std::memory_order_release);
+            printf("[SwitchAudio] Failed to start Core %d audio thread (0x%x); using presenter flush.\n", sys_core, trc);
+        }
+    }
 }
 
 void recomp_audio_output_shutdown(void) {
+    if (s_audio_flush_thread_active.exchange(false, std::memory_order_acq_rel)) {
+        s_audio_flush_running.store(false, std::memory_order_release);
+        threadWaitForExit(&s_audio_flush_thread);
+        threadClose(&s_audio_flush_thread);
+    }
     if (!s_audio_initialized) return;
     ScopedAudioMutex lock;
     if (!s_audio_initialized) return;

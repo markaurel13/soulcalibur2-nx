@@ -534,6 +534,13 @@ void workerLoop()
             break;
         }
         s_prof_exec_ticks += (worker_cntpct() - te0);
+        // Pre-zero the draw command regions on Core 2 so Core 0 avoids per-draw memset().
+        std::memset(&job.data.direct, 0, offsetof(RecompD3dPresenterCommand, data.draw.program));
+        std::memset(&job.data.direct.data.draw.use_texture_factor, 0,
+                    offsetof(RecompD3dPresenterDrawCommand, pixel_program) -
+                        offsetof(RecompD3dPresenterDrawCommand, use_texture_factor));
+        std::memset(job.data.direct.data.draw.stage_textures, 0,
+                    sizeof(job.data.direct.data.draw.stage_textures));
         g_worker.head.store((h + 1u) & (MAX_WORKER_JOBS - 1u), std::memory_order_seq_cst);
         g_worker.busy.store(false, std::memory_order_seq_cst);
 

@@ -536,11 +536,13 @@ void sub_00079A30(void)
 
 void sub_00079CD0(void)
 {
-    const uint32_t tbl = ecx;
-    const uint32_t bs = MEM32(esp + 4);
-    const uint32_t max_bits = MEM8(tbl + 4u);
-    const uint32_t bit_pos = MEM32(bs);
-    const uint32_t byte_ptr = MEM32(bs + 4);
+    const uint8_t *tbl_ptr = &MEM8(ecx);
+    uint8_t *bs_ptr = &MEM8(MEM32(esp + 4));
+    const uint32_t max_bits = tbl_ptr[4];
+    uint32_t bit_pos;
+    uint32_t byte_ptr;
+    __builtin_memcpy(&bit_pos, bs_ptr, 4);
+    __builtin_memcpy(&byte_ptr, bs_ptr + 4, 4);
     uint32_t code = 0;
     if (max_bits > 0u) {
         uint32_t w;
@@ -548,17 +550,21 @@ void sub_00079CD0(void)
         w = __builtin_bswap32(w);
         code = (w << bit_pos) >> (32u - max_bits);
     }
-    const uint32_t count = MEM8(tbl + 5u);
-    uint32_t p = tbl + count * 4u + 2u;
-    const uint32_t end = tbl + 6u;
-    while (p > end && (uint32_t)MEM16(p) > code) {
-        p -= 4u;
+    const uint32_t count = tbl_ptr[5];
+    uint32_t off = count * 4u + 2u;
+    while (off > 6u) {
+        uint16_t key;
+        __builtin_memcpy(&key, tbl_ptr + off, 2);
+        if ((uint32_t)key <= code) break;
+        off -= 4u;
     }
-    const uint32_t sym_len = MEM8(p + 2u);
+    const uint32_t sym_len = tbl_ptr[off + 2u];
     const uint32_t total = bit_pos + sym_len;
-    MEM32(bs) = total & 7u;
-    MEM32(bs + 4) = byte_ptr + (total >> 3);
-    eax = MEM8(p + 3u);
+    const uint32_t new_bit = total & 7u;
+    const uint32_t new_ptr = byte_ptr + (total >> 3);
+    __builtin_memcpy(bs_ptr, &new_bit, 4);
+    __builtin_memcpy(bs_ptr + 4, &new_ptr, 4);
+    eax = tbl_ptr[off + 3u];
     g_eflags &= ~1u;
     esp += 8;
 }

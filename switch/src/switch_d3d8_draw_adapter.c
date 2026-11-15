@@ -29,6 +29,78 @@ extern uint8_t *recomp_fast_ram;
 #define RECOMP_XBOX_RAM_SIZE (64u * 1024u * 1024u)
 #endif
 
+static inline bool eq_bytes_12(const void *a, const void *b)
+{
+    const uint64_t *pa = (const uint64_t *)a;
+    const uint64_t *pb = (const uint64_t *)b;
+    const uint32_t *pa32 = (const uint32_t *)a;
+    const uint32_t *pb32 = (const uint32_t *)b;
+    return pa[0] == pb[0] && pa32[2] == pb32[2];
+}
+
+static inline bool eq_bytes_16(const void *a, const void *b)
+{
+    const uint64_t *pa = (const uint64_t *)a;
+    const uint64_t *pb = (const uint64_t *)b;
+    return pa[0] == pb[0] && pa[1] == pb[1];
+}
+
+static inline bool eq_bytes_20(const void *a, const void *b)
+{
+    const uint64_t *pa = (const uint64_t *)a;
+    const uint64_t *pb = (const uint64_t *)b;
+    const uint32_t *pa32 = (const uint32_t *)a;
+    const uint32_t *pb32 = (const uint32_t *)b;
+    return pa[0] == pb[0] && pa[1] == pb[1] && pa32[4] == pb32[4];
+}
+
+static inline bool eq_bytes_32(const void *a, const void *b)
+{
+    const uint64_t *pa = (const uint64_t *)a;
+    const uint64_t *pb = (const uint64_t *)b;
+    return pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2] && pa[3] == pb[3];
+}
+
+static inline bool eq_bytes_48(const void *a, const void *b)
+{
+    const uint64_t *pa = (const uint64_t *)a;
+    const uint64_t *pb = (const uint64_t *)b;
+    return pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2] &&
+           pa[3] == pb[3] && pa[4] == pb[4] && pa[5] == pb[5];
+}
+
+static inline bool eq_bytes_64(const void *a, const void *b)
+{
+    const uint64_t *pa = (const uint64_t *)a;
+    const uint64_t *pb = (const uint64_t *)b;
+    return pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2] && pa[3] == pb[3] &&
+           pa[4] == pb[4] && pa[5] == pb[5] && pa[6] == pb[6] && pa[7] == pb[7];
+}
+
+static inline bool eq_bytes_u32_n(const void *a, const void *b, size_t bytes)
+{
+    const uint64_t *pa = (const uint64_t *)a;
+    const uint64_t *pb = (const uint64_t *)b;
+    size_t i = 0;
+    for (; (i + 1) * 8u <= bytes; ++i) {
+        if (pa[i] != pb[i]) return false;
+    }
+    if ((bytes & 4u) != 0u) {
+        const uint32_t *pa32 = (const uint32_t *)a;
+        const uint32_t *pb32 = (const uint32_t *)b;
+        if (pa32[(bytes / 4u) - 1u] != pb32[(bytes / 4u) - 1u]) return false;
+    }
+    return true;
+}
+
+static inline void copy_vec4(float *dst, const float *src)
+{
+    uint64_t *d = (uint64_t *)dst;
+    const uint64_t *s = (const uint64_t *)src;
+    d[0] = s[0];
+    d[1] = s[1];
+}
+
 static inline uint8_t *sc2_da_mem(uint32_t addr, size_t width)
 {
     if (__builtin_expect(recomp_fast_ram != NULL && !(addr >= 0xfd000000u && addr < 0xff000000u), 1)) {
@@ -150,7 +222,7 @@ static void pixel_set(void)
         const bool cache_hit = s_psh_cache_valid && shadow_on &&
                                s_psh_cache_device == device &&
                                *recomp_memory_u32(device + PIXEL_HANDLE) != 0u;
-        if (cache_hit && memcmp(s_psh_cache_words, src, 0xe4u) == 0) {
+        if (cache_hit && eq_bytes_u32_n(s_psh_cache_words, src, 0xe4u)) {
             /* All 57 words in PIXEL_SHADOW and render_state already match */
         } else if (cache_hit) {
             memcpy(recomp_memory(PIXEL_SHADOW, 0xe4u), src, 0xe4u);
@@ -306,7 +378,7 @@ static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDr
         const void *hdr = recomp_memory(resource, 20u);
         const uint32_t bb0 = *recomp_memory_u32(device + 0x1604u + 4u);
         const uint32_t bb1 = *recomp_memory_u32(device + 0x1604u + 24u + 4u);
-        if (e->valid && e->resource == resource && memcmp(e->raw_hdr, hdr, 20u) == 0 &&
+        if (e->valid && e->resource == resource && eq_bytes_20(e->raw_hdr, hdr) &&
             e->backbuf_data0 == bb0 && e->backbuf_data1 == bb1) {
             bool pal_ok = true;
             if (e->desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8) {
@@ -1379,7 +1451,7 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     uint32_t args[2][6];
     for (uint32_t i = 0u; i < 2u; ++i)
         for (uint32_t k = 0u; k < 6u; ++k) args[i][k] = stage[i][fields[k]];
-    const bool mask_combiner = memcmp(args[1], alpha_mask, sizeof args[1]) == 0;
+    const bool mask_combiner = eq_bytes_16(args[1], alpha_mask);
     /* Stage 0 selects texture and oD0 per channel; alpha may MODULATE by
        TFACTOR (the projected shadow FUN_0027a760, the effect FUN_002718e0). */
     bool alpha_tfactor = false;
@@ -1656,7 +1728,7 @@ static uint32_t declaration_layout(uint32_t object, bool program)
     for (uint32_t c = 0u; c < 4u; ++c) {
         if (s_decl_cache[c].valid && s_decl_cache[c].object == object &&
             s_decl_cache[c].program == program &&
-            memcmp(s_decl_cache[c].raw, raw_ptr, 256u) == 0) {
+            eq_bytes_u32_n(s_decl_cache[c].raw, raw_ptr, 256u)) {
             memcpy(program_remap, s_decl_cache[c].remap, sizeof program_remap);
             gather.active = s_decl_cache[c].gather_active;
             gather.count = s_decl_cache[c].gather_count;
@@ -2033,7 +2105,7 @@ static void general_fog(uint32_t device, const RecompD3dVertexLayout *layout,
     static bool s_fog_pvalid = false;
     static uint32_t s_fog_pmode = 0u;
     static float s_fog_pparams[3];
-    if (!s_fog_pvalid || mode != s_fog_pmode || memcmp(params, s_fog_pparams, 12u) != 0) {
+    if (!s_fog_pvalid || mode != s_fog_pmode || !eq_bytes_12(params, s_fog_pparams)) {
         if (mode > 3u) recomp_stop(2, "d3d8:general-fog-mode:%u", mode);
         for (uint32_t i = 0u; i < 3u; ++i)
             if (!isfinite(params[i])) recomp_stop(2, "d3d8:general-fog-params");
@@ -2061,7 +2133,7 @@ static void general_fog(uint32_t device, const RecompD3dVertexLayout *layout,
             static float s_fog_world[16];
             static float s_fog_view[16];
             static float s_fog_eye[16];
-            if (!s_fog_eye_valid || memcmp(world, s_fog_world, 64u) != 0 || memcmp(view, s_fog_view, 64u) != 0) {
+            if (!s_fog_eye_valid || !eq_bytes_64(world, s_fog_world) || !eq_bytes_64(view, s_fog_view)) {
                 multiply(world, view, s_fog_eye, "fog-eye");
                 memcpy(s_fog_world, world, 64u);
                 memcpy(s_fog_view, view, 64u);
@@ -2113,8 +2185,8 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
     if (*recomp_memory_u32(0x0015e5c4u) != 0u) recomp_stop(2, "d3d8:general-lighting-two-sided");
     RecompD3dDirectionalLighting *result = &draw->directional;
     result->stage_mode = false;
-    memset(result->ambient_emissive, 0, sizeof result->ambient_emissive);
-    memset(result->stage, 0, sizeof result->stage);
+    __builtin_memset(result->ambient_emissive, 0, sizeof result->ambient_emissive);
+    __builtin_memset(result->stage, 0, sizeof result->stage);
     const float *material = (const float *)recomp_memory(device + 0xae0u, 17u * sizeof(float));
     const bool specular = *recomp_memory_u32(RS_SPECULAR_ENABLE) != 0u;
     const bool color_vertex = *recomp_memory_u32(0x0015e534u) != 0u;
@@ -2123,7 +2195,7 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
     uint32_t raw_sources[4] = {0u, 0u, 0u, 0u};
     if (color_vertex) {
         const uint32_t *src_ptr = (const uint32_t *)recomp_memory(0x0015e548u, 16u);
-        memcpy(raw_sources, src_ptr, 16u);
+        copy_vec4((float *)raw_sources, (const float *)src_ptr);
     }
     const uint32_t *slot_ptrs = (const uint32_t *)recomp_memory(device + 0x394u, 32u);
 
@@ -2141,14 +2213,16 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
     } LightCacheEntry;
     static LightCacheEntry s_lcache[4];
     static uint32_t s_lcache_next = 0u;
+    static int s_lcache_mru = 0;
 
     int cache_hit = -1;
-    for (int k = 0; k < 4; ++k) {
+    for (int step = 0; step < 4; ++step) {
+        const int k = (s_lcache_mru + step) & 3;
         const LightCacheEntry *e = &s_lcache[k];
         if (!e->valid || e->dev != device || e->spec != specular || e->diff != diffuse || e->gamb != global_amb ||
-            memcmp(e->srcs, raw_sources, 16u) != 0 ||
-            memcmp(e->mat, material, 17u * sizeof(float)) != 0 ||
-            memcmp(e->ptrs, slot_ptrs, 32u) != 0) {
+            !eq_bytes_16(e->srcs, raw_sources) ||
+            !eq_bytes_32(e->ptrs, slot_ptrs) ||
+            !eq_bytes_u32_n(e->mat, material, 17u * sizeof(float))) {
             continue;
         }
         bool recs_ok = true;
@@ -2156,13 +2230,14 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
             const uint32_t address = slot_ptrs[slot];
             if (address == 0u) continue;
             const RecompD3dLightRecord *record = (const RecompD3dLightRecord *)recomp_memory(address, sizeof *record);
-            if (memcmp(record, &e->recs[slot], sizeof *record) != 0) {
+            if (!eq_bytes_u32_n(record, &e->recs[slot], sizeof *record)) {
                 recs_ok = false;
                 break;
             }
         }
         if (recs_ok) {
             cache_hit = k;
+            s_lcache_mru = k;
             break;
         }
     }
@@ -2171,21 +2246,23 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
         const RecompD3dDirectionalLighting *cres = &s_lcache[cache_hit].res;
         result->count = cres->count;
         const uint32_t cnt = result->count;
-        if (cnt != 0u) {
-            memcpy(result->colors, cres->colors, cnt * 16u);
-            memcpy(result->ambient, cres->ambient, cnt * 16u);
-            memcpy(result->specular, cres->specular, cnt * 16u);
-            memcpy(result->positions, cres->positions, cnt * 16u);
-            memcpy(result->directions, cres->directions, cnt * 16u);
-            memcpy(result->attenuation, cres->attenuation, cnt * 16u);
+        for (uint32_t i = 0u; i < cnt; ++i) {
+            copy_vec4(result->colors[i], cres->colors[i]);
+            copy_vec4(result->ambient[i], cres->ambient[i]);
+            copy_vec4(result->specular[i], cres->specular[i]);
+            copy_vec4(result->positions[i], cres->positions[i]);
+            copy_vec4(result->directions[i], cres->directions[i]);
+            copy_vec4(result->attenuation[i], cres->attenuation[i]);
         }
-        memcpy(result->sources, cres->sources, 16u);
-        memcpy(result->material_diffuse, cres->material_diffuse, 16u);
-        memcpy(result->material_ambient, cres->material_ambient, 16u);
-        memcpy(result->material_emissive, cres->material_emissive, 16u);
-        memcpy(result->global_ambient, cres->global_ambient, 16u);
+        copy_vec4(result->sources, cres->sources);
+        copy_vec4(result->material_diffuse, cres->material_diffuse);
+        copy_vec4(result->material_ambient, cres->material_ambient);
+        copy_vec4(result->material_emissive, cres->material_emissive);
+        copy_vec4(result->global_ambient, cres->global_ambient);
     } else {
-        LightCacheEntry *dst_e = &s_lcache[s_lcache_next++ & 3u];
+        const int dst_idx = (int)(s_lcache_next++ & 3u);
+        s_lcache_mru = dst_idx;
+        LightCacheEntry *dst_e = &s_lcache[dst_idx];
         result->count = 0u;
         memset(result->sources, 0, sizeof result->sources);
         result->material_ambient[3] = 0.0f;
@@ -2255,7 +2332,7 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
     const bool need_inv = model_view_active || (specular && *recomp_memory_u32(0x0015e530u) != 0u);
     const float *inverse_ptr = s_light_cached_inv;
     if (need_inv) {
-        if (!s_light_inv_valid || memcmp(view, s_light_cached_view, 64u) != 0) {
+        if (!s_light_inv_valid || !eq_bytes_64(view, s_light_cached_view)) {
             if (!affine_inverse(view, s_light_cached_inv)) recomp_stop(2, "d3d8:general-lighting-view");
             memcpy(s_light_cached_view, view, 64u);
             s_light_inv_valid = true;
@@ -2274,21 +2351,25 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
         } NormCacheEntry;
         static NormCacheEntry s_norm_cache[4];
         static uint32_t s_norm_next = 0u;
+        static int s_norm_mru = 0;
         int norm_hit = -1;
-        for (int k = 0; k < 4; ++k) {
-            if (s_norm_cache[k].valid && memcmp(result->world_transforms[0], s_norm_cache[k].world, 48u) == 0) {
+        for (int step = 0; step < 4; ++step) {
+            const int k = (s_norm_mru + step) & 3;
+            if (s_norm_cache[k].valid && eq_bytes_48(result->world_transforms[0], s_norm_cache[k].world)) {
                 norm_hit = k;
+                s_norm_mru = k;
                 break;
             }
         }
         if (norm_hit < 0) {
             norm_hit = (int)(s_norm_next++ & 3u);
+            s_norm_mru = norm_hit;
             if (!recomp_d3d_normal_transform(result->world_transforms[0], s_norm_cache[norm_hit].out))
-                memset(s_norm_cache[norm_hit].out, 0, sizeof s_norm_cache[norm_hit].out);
-            memcpy(s_norm_cache[norm_hit].world, result->world_transforms[0], 48u);
+                __builtin_memset(s_norm_cache[norm_hit].out, 0, sizeof s_norm_cache[norm_hit].out);
+            __builtin_memcpy(s_norm_cache[norm_hit].world, result->world_transforms[0], 48u);
             s_norm_cache[norm_hit].valid = true;
         }
-        memcpy(result->normal_transforms[0], s_norm_cache[norm_hit].out, sizeof s_norm_cache[norm_hit].out);
+        __builtin_memcpy(result->normal_transforms[0], s_norm_cache[norm_hit].out, sizeof s_norm_cache[norm_hit].out);
     }
     if (specular && *recomp_memory_u32(0x0015e530u) != 0u) {
         /* LOCALVIEWER: the eye's world position, the inverse view's origin. */
@@ -2299,7 +2380,7 @@ static void general_lighting(uint32_t device, const RecompD3dVertexLayout *layou
         static bool s_ldir_valid = false;
         static float s_ldir_view[16];
         static float s_ldir_vec[3];
-        if (!s_ldir_valid || memcmp(view, s_ldir_view, 64u) != 0) {
+        if (!s_ldir_valid || !eq_bytes_64(view, s_ldir_view)) {
             const float length = sqrtf(view[2] * view[2] + view[6] * view[6] + view[10] * view[10]);
             if (!isfinite(length) || !isfinite(1.0f / length) || length <= 0.0f) recomp_stop(2, "d3d8:general-lighting-view-direction");
             for (uint32_t c = 0u; c < 3u; ++c) s_ldir_vec[c] = -view[2u + 4u * c] / length;
@@ -2323,17 +2404,64 @@ static void general_fixed_stages(uint32_t device, const RecompD3dVertexLayout *l
     RecompD3dPresenterDrawCommand *draw, bool program_draw)
 {
     const uint32_t *stage_base = recomp_memory_u32(STAGES);
+    const bool specular_enable = *recomp_memory_u32(RS_SPECULAR_ENABLE) != 0u;
     /* Lighting is general_lighting's; vertex specular in the FVF is not an input yet. */
-    if (!program_draw && *recomp_memory_u32(RS_SPECULAR_ENABLE) != 0u &&
+    if (!program_draw && specular_enable &&
         layout->specular_offset != RECOMP_D3D_FVF_ABSENT)
         recomp_stop(2, "d3d8:general-specular:fvf=%x", draw->fvf);
     RecompD3dPixelProgram *program = &draw->pixel_program;
-    program->specular_add = *recomp_memory_u32(RS_SPECULAR_ENABLE) != 0u;
+    program->specular_add = specular_enable;
     program->kind = RECOMP_D3D_PIXEL_FIXED_FUNCTION;
+
+    static bool s_tfactor_valid = false;
+    static uint32_t s_tfactor_val = 0u;
+    static float s_tfactor_rgba[4];
     const uint32_t factor = draw->texture_factor;
-    const float rgba[4] = {((factor >> 16u) & 255u) / 255.0f, ((factor >> 8u) & 255u) / 255.0f,
-        (factor & 255u) / 255.0f, (factor >> 24u) / 255.0f};
-    memcpy(program->constants[RECOMP_D3D_PIXEL_CONSTANT_TFACTOR], rgba, sizeof rgba);
+    if (!s_tfactor_valid || factor != s_tfactor_val) {
+        s_tfactor_val = factor;
+        s_tfactor_rgba[0] = ((factor >> 16u) & 255u) / 255.0f;
+        s_tfactor_rgba[1] = ((factor >> 8u) & 255u) / 255.0f;
+        s_tfactor_rgba[2] = (factor & 255u) / 255.0f;
+        s_tfactor_rgba[3] = (factor >> 24u) / 255.0f;
+        s_tfactor_valid = true;
+    }
+    copy_vec4(program->constants[RECOMP_D3D_PIXEL_CONSTANT_TFACTOR], s_tfactor_rgba);
+
+    static bool s_fs_valid = false;
+    static bool s_fs_program_draw = false;
+    static uint32_t s_fs_stage_count = 0u;
+    static uint32_t s_fs_s11_21[RECOMP_D3D_PIXEL_STAGES][11];
+    static uint32_t s_fs_s28[RECOMP_D3D_PIXEL_STAGES];
+    static RecompD3dPixelStage s_fs_stages[RECOMP_D3D_PIXEL_STAGES];
+
+    bool hit = s_fs_valid && (program_draw == s_fs_program_draw);
+    if (hit) {
+        for (uint32_t i = 0u; i < s_fs_stage_count; ++i) {
+            const uint32_t *state = stage_base + i * 32u;
+            if (state[28] != s_fs_s28[i] ||
+                !eq_bytes_u32_n(&state[11], s_fs_s11_21[i], 11u * sizeof(uint32_t))) {
+                hit = false;
+                break;
+            }
+        }
+        if (hit && s_fs_stage_count < RECOMP_D3D_PIXEL_STAGES &&
+            stage_base[s_fs_stage_count * 32u + 12u] != RECOMP_D3DTOP_DISABLE) {
+            hit = false;
+        }
+    }
+
+    if (hit) {
+        for (uint32_t i = 0u; i < s_fs_stage_count; ++i) {
+            const uint32_t *state = stage_base + i * 32u;
+            RecompD3dPixelStage *out = &program->stages[i];
+            *out = s_fs_stages[i];
+            out->sampled = bind_stage_texture(device, i, state, out->texcoord, layout, draw);
+        }
+        program->stage_count = s_fs_stage_count;
+        return;
+    }
+
+    uint32_t count = 0u;
     for (uint32_t i = 0u; i < RECOMP_D3D_PIXEL_STAGES; ++i) {
         const uint32_t *state = stage_base + i * 32u;
         if (state[12] == RECOMP_D3DTOP_DISABLE) break;
@@ -2352,9 +2480,16 @@ static void general_fixed_stages(uint32_t device, const RecompD3dVertexLayout *l
         if (!program_draw && ((state[28] >> 16u) != 0u || state[21] != 0u))
             recomp_stop(2, "d3d8:general-texcoord:stage=%u:%08x:%u", i, state[28], state[21]);
         out->alpha_kill = state[11] == 4u;
+        s_fs_stages[i] = *out;
+        memcpy(s_fs_s11_21[i], &state[11], 11u * sizeof(uint32_t));
+        s_fs_s28[i] = state[28];
         out->sampled = bind_stage_texture(device, i, state, out->texcoord, layout, draw);
-        program->stage_count = i + 1u;
+        count = i + 1u;
     }
+    program->stage_count = count;
+    s_fs_stage_count = count;
+    s_fs_program_draw = program_draw;
+    s_fs_valid = true;
 }
 
 /* The clip-space transform for a SetModelView composite. NV2A applies the
@@ -2434,16 +2569,27 @@ static float s_cached_view[16];
 static float s_cached_proj[16];
 static float s_cached_vp[16];
 static bool s_vp_valid = false;
+static uint32_t s_vp_gen = 0u;
+
+typedef struct {
+    bool valid;
+    uint32_t vp_gen;
+    float world[16];
+    float transform[16];
+} WorldVpCacheEntry;
+
+static WorldVpCacheEntry s_world_vp_cache[4];
 
 static inline const float *get_cached_vp(uint32_t device, const float *view, const float *projection)
 {
     if (!s_vp_valid ||
-        memcmp(view, s_cached_view, 64u) != 0 ||
-        memcmp(projection, s_cached_proj, 64u) != 0) {
+        !eq_bytes_64(view, s_cached_view) ||
+        !eq_bytes_64(projection, s_cached_proj)) {
         multiply(view, projection, s_cached_vp, "view-projection");
         memcpy(s_cached_view, view, 64u);
         memcpy(s_cached_proj, projection, 64u);
         s_vp_valid = true;
+        ++s_vp_gen;
     }
     return s_cached_vp;
 }
@@ -2457,7 +2603,7 @@ bool __wrap_recomp_d3d_light_set(RecompD3dLightRecord *record, const RecompD3dLi
     static uint32_t s_lset_rr = 0u;
     if (record != NULL && desc != NULL) {
         for (uint32_t i = 0u; i < 4u; ++i) {
-            if (s_lset_valid[i] && memcmp(&s_lset_desc[i], desc, sizeof *desc) == 0) {
+            if (s_lset_valid[i] && eq_bytes_u32_n(&s_lset_desc[i], desc, sizeof *desc)) {
                 record->desc = *desc;
                 record->flags |= 3u;
                 if (desc->type == 3u) memcpy(record->normalized_direction, s_lset_dir[i], sizeof s_lset_dir[i]);
@@ -2620,7 +2766,11 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     const bool use_worker_slot = (cmd_ptr != NULL);
     if (!use_worker_slot) cmd_ptr = &local_command;
     RecompD3dPresenterDrawCommand *draw = &cmd_ptr->data.draw;
-    memset(cmd_ptr, 0, offsetof(RecompD3dPresenterCommand, data.draw.program));
+    if (!use_worker_slot) {
+        memset(cmd_ptr, 0, offsetof(RecompD3dPresenterCommand, data.draw.program));
+        memset(&draw->use_texture_factor, 0, offsetof(RecompD3dPresenterDrawCommand, pixel_program) - offsetof(RecompD3dPresenterDrawCommand, use_texture_factor));
+        memset(draw->stage_textures, 0, sizeof draw->stage_textures);
+    }
     draw->program_count = 0u;
     draw->program_alpha_mask = false;
     draw->program_mask_lod_bias = 0.0f;
@@ -2629,7 +2779,6 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->has_transform = false;
     draw->screen_space_offset[0] = 0.0f;
     draw->screen_space_offset[1] = 0.0f;
-    memset(&draw->use_texture_factor, 0, offsetof(RecompD3dPresenterDrawCommand, pixel_program) - offsetof(RecompD3dPresenterDrawCommand, use_texture_factor));
     draw->pixel_program.kind = RECOMP_D3D_PIXEL_NONE;
     draw->pixel_program.stage_count = 0u;
     draw->pixel_program.specular_add = false;
@@ -2859,15 +3008,35 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
            ret 0x28708b). NV2A vertices then become NaN and are clipped, so the
            draw shows nothing; drop it instead of stopping. */
         const bool vp_hit = s_vp_valid &&
-            memcmp(view, s_cached_view, 64u) == 0 &&
-            memcmp(projection, s_cached_proj, 64u) == 0;
+            eq_bytes_64(view, s_cached_view) &&
+            eq_bytes_64(projection, s_cached_proj);
+        const float *cached_transform = NULL;
+        if (!model_view_active && vp_hit) {
+            if (s_world_vp_cache[0].valid && s_world_vp_cache[0].vp_gen == s_vp_gen &&
+                eq_bytes_64(world, s_world_vp_cache[0].world)) {
+                cached_transform = s_world_vp_cache[0].transform;
+            } else {
+                for (uint32_t c = 1u; c < 4u; ++c) {
+                    if (s_world_vp_cache[c].valid && s_world_vp_cache[c].vp_gen == s_vp_gen &&
+                        eq_bytes_64(world, s_world_vp_cache[c].world)) {
+                        WorldVpCacheEntry tmp = s_world_vp_cache[c];
+                        for (uint32_t k = c; k > 0u; --k) s_world_vp_cache[k] = s_world_vp_cache[k - 1u];
+                        s_world_vp_cache[0] = tmp;
+                        cached_transform = s_world_vp_cache[0].transform;
+                        break;
+                    }
+                }
+            }
+        }
         const bool fast_shadow = ((draw->blend.color_write_mask & 0x0fu) == 0u);
         if (__builtin_expect(!fast_shadow, 1)) {
             uint32_t nonfinite = 0u;
             if (vp_hit) {
-                for (uint32_t i = 0u; i < 16u; ++i) {
-                    nonfinite += !isfinite(world[i]);
-                    for (uint32_t b = 0u; b < layout.blend_weight_count; ++b) nonfinite += !isfinite(blend[b][i]);
+                if (cached_transform == NULL) {
+                    for (uint32_t i = 0u; i < 16u; ++i) nonfinite += !isfinite(world[i]);
+                }
+                for (uint32_t b = 0u; b < layout.blend_weight_count; ++b) {
+                    for (uint32_t i = 0u; i < 16u; ++i) nonfinite += !isfinite(blend[b][i]);
                 }
             } else {
                 for (uint32_t i = 0u; i < 16u; ++i) {
@@ -2883,6 +3052,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
                         dropped, nonfinite, *recomp_memory_u32(recomp_runtime.registers.esp));
                 free(sequential);
                 if (packed != s_gather_scratch && !Switch_PresenterContainsPayload(packed)) free(packed);
+                if (use_worker_slot) {
+                    memset(cmd_ptr, 0, offsetof(RecompD3dPresenterCommand, data.draw.program));
+                    memset(&draw->use_texture_factor, 0, offsetof(RecompD3dPresenterDrawCommand, pixel_program) - offsetof(RecompD3dPresenterDrawCommand, use_texture_factor));
+                }
                 return;
             }
         }
@@ -2902,12 +3075,27 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
                         hidden, *recomp_memory_u32(recomp_runtime.registers.esp));
                 free(sequential);
                 if (packed != s_gather_scratch && !Switch_PresenterContainsPayload(packed)) free(packed);
+                if (use_worker_slot) {
+                    memset(cmd_ptr, 0, offsetof(RecompD3dPresenterCommand, data.draw.program));
+                    memset(&draw->use_texture_factor, 0, offsetof(RecompD3dPresenterDrawCommand, pixel_program) - offsetof(RecompD3dPresenterDrawCommand, use_texture_factor));
+                }
                 return;
             }
             composite_clip(device, draw->transform);
         }
         else {
-            multiply(world, vp, draw->transform, "world");
+            if (cached_transform != NULL) {
+                memcpy(draw->transform, cached_transform, 64u);
+            } else {
+                multiply(world, vp, draw->transform, "world");
+                if (!fast_shadow) {
+                    for (uint32_t k = 3u; k > 0u; --k) s_world_vp_cache[k] = s_world_vp_cache[k - 1u];
+                    s_world_vp_cache[0].valid = true;
+                    s_world_vp_cache[0].vp_gen = s_vp_gen;
+                    memcpy(s_world_vp_cache[0].world, world, 64u);
+                    memcpy(s_world_vp_cache[0].transform, draw->transform, 64u);
+                }
+            }
         }
         draw->has_transform = true;
         draw->blend_weight_count = layout.blend_weight_count;
@@ -2922,9 +3110,12 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
 
     RecompD3dViewport viewport;
     recomp_guest_load(&viewport, device + 0xac0u, sizeof viewport);
-    const float rect[6] = {(float)viewport.x, (float)viewport.y, (float)viewport.width,
-        (float)viewport.height, viewport.min_z, viewport.max_z};
-    memcpy(draw->viewport, rect, sizeof rect);
+    draw->viewport[0] = (float)viewport.x;
+    draw->viewport[1] = (float)viewport.y;
+    draw->viewport[2] = (float)viewport.width;
+    draw->viewport[3] = (float)viewport.height;
+    draw->viewport[4] = viewport.min_z;
+    draw->viewport[5] = viewport.max_z;
     /* Program draws carry the offset in c59. */
     if (!program) {
         recomp_guest_load(draw->screen_space_offset, device + 0xad8u, sizeof draw->screen_space_offset);
@@ -2938,9 +3129,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         recomp_guest_load(draw->scissor, device + 0x1760u, sizeof draw->scissor);
     } else {
         /* SDK count zero clips to the viewport, including pretransformed draws. */
-        const int32_t clip[4] = {(int32_t)viewport.x, (int32_t)viewport.y,
-            (int32_t)(viewport.x + viewport.width), (int32_t)(viewport.y + viewport.height)};
-        memcpy(draw->scissor, clip, sizeof clip);
+        draw->scissor[0] = (int32_t)viewport.x;
+        draw->scissor[1] = (int32_t)viewport.y;
+        draw->scissor[2] = (int32_t)(viewport.x + viewport.width);
+        draw->scissor[3] = (int32_t)(viewport.y + viewport.height);
     }
     const bool native_line = primitive == 2u && !program && draw->fvf == 0x42u &&
         *recomp_memory_u32(device + 0xb68u) == 0u && *recomp_memory_u32(0x0015e528u) == 0u;
@@ -2963,7 +3155,6 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
                                 !(draw->depth.alpha_test_enable && draw->depth.alpha_func != 7u);
     if (!is_shadow_null) {
         uint64_t tt0 = read_cntpct();
-        memset(draw->stage_textures, 0, sizeof draw->stage_textures);
         attach_texture(device, 0u, draw);
         s_prof_t_tex += (read_cntpct() - tt0);
     }
@@ -3353,8 +3544,8 @@ static bool try_offload_push_shadow(uint32_t start, uint32_t end)
         static float s_last_shadow_transform[16];
         static bool s_last_shadow_valid = false;
         if (s_last_shadow_valid &&
-            memcmp(world, s_last_shadow_world, 64u) == 0 &&
-            memcmp(vp, s_last_shadow_vp, 64u) == 0) {
+            eq_bytes_64(world, s_last_shadow_world) &&
+            eq_bytes_64(vp, s_last_shadow_vp)) {
             memcpy(job->transform, s_last_shadow_transform, 64u);
         } else {
             multiply(world, vp, job->transform, "world");

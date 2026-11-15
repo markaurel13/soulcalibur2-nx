@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <atomic>
+#include "switch_core_manager.h"
 #include "switch_watchdog.h"
 
 namespace SwitchFS {
@@ -278,7 +279,8 @@ int main(int argc, char *argv[]) {
         printf("[Main] [-] Error: no se pudo abrir log en SD!\n");
     }
 
-    // 5. Montar RomFS si está disponible
+    // 5. Inicializar gestor de 4 nucleos / forwarder NPDM y montar RomFS
+    SwitchCore_Init((argc > 0 && argv && argv[0]) ? argv[0] : nullptr);
     SwitchFS::Initialize();
 
     // 6. Inicializar subsistema de mandos

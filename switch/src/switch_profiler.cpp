@@ -5,6 +5,7 @@
 #include <atomic>
 #include <time.h>
 #include "runtime.h"
+#include "switch_core_manager.h"
 
 extern "C" FILE* Switch_GetMainLogFile(void);
 
@@ -706,7 +707,7 @@ static void pc_sampler_worker(void *arg) {
                 fprintf(f, "[PcProf] window=10s samples=%u other=%u text_base=0x%llx ref_off=0x%llx\n",
                         total, out_of_range, (unsigned long long)text_base,
                         (unsigned long long)((uint64_t)&Switch_StartWatchdog - text_base));
-                for (int rank = 0; rank < 20; ++rank) {
+                for (int rank = 0; rank < 30; ++rank) {
                     uint32_t best = 0, best_i = 0;
                     for (uint32_t i = 0; i < SC2_PC_SLOTS; ++i) {
                         if (s_pc_hist[i] > best) { best = s_pc_hist[i]; best_i = i; }
@@ -738,18 +739,24 @@ static void pc_sampler_worker(void *arg) {
 void Switch_StartWatchdog(void) {
     s_last_activity_tick.store(armGetSystemTick(), std::memory_order_relaxed);
     s_watchdog_running.store(true, std::memory_order_relaxed);
-    Result rc = threadCreate(&s_watchdog_thread, watchdog_worker, NULL, s_watchdog_stack, sizeof(s_watchdog_stack), 0x20, 2);
+    const int sys_core = SwitchCore_GetSystemCore();
+    const int wd_core = (sys_core >= 0) ? sys_core : 2;
+    const int wd_prio = (sys_core >= 0) ? 0x2B : 0x20;
+    const int samp_core = (sys_core >= 0) ? sys_core : 2;
+    const int pc_core = (sys_core >= 0) ? sys_core : 1;
+    const int pc_prio = (sys_core >= 0) ? 0x2C : 0x28;
+    Result rc = threadCreate(&s_watchdog_thread, watchdog_worker, NULL, s_watchdog_stack, sizeof(s_watchdog_stack), wd_prio, wd_core);
     if (R_SUCCEEDED(rc)) {
         threadStart(&s_watchdog_thread);
-        printf("[Main] [+] Diagnostic Watchdog Thread started on Core 2 (Prio 0x20).\n");
+        printf("[Main] [+] Diagnostic Watchdog Thread started on Core %d (Prio 0x%X).\n", wd_core, wd_prio);
 #ifdef SC2_FUNC_PROFILE
         s_sampler_running.store(true, std::memory_order_relaxed);
-        if (R_SUCCEEDED(threadCreate(&s_sampler_thread, sampler_worker, NULL, s_sampler_stack, sizeof(s_sampler_stack), 0x2C, 2))) {
+        if (R_SUCCEEDED(threadCreate(&s_sampler_thread, sampler_worker, NULL, s_sampler_stack, sizeof(s_sampler_stack), 0x2C, samp_core))) {
             threadStart(&s_sampler_thread);
         }
 #elif defined(SC2_PC_PROFILE)
         s_pc_sampler_running.store(true, std::memory_order_relaxed);
-        if (R_SUCCEEDED(threadCreate(&s_pc_sampler_thread, pc_sampler_worker, NULL, s_pc_sampler_stack, sizeof(s_pc_sampler_stack), 0x28, 1))) {
+        if (R_SUCCEEDED(threadCreate(&s_pc_sampler_thread, pc_sampler_worker, NULL, s_pc_sampler_stack, sizeof(s_pc_sampler_stack), pc_prio, pc_core))) {
             threadStart(&s_pc_sampler_thread);
         }
 #endif

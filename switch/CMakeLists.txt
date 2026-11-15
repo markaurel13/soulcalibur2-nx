@@ -140,6 +140,7 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_fs.cpp
     src/d3d_presenter_deko3d.cpp
     src/switch_audio_audren.cpp
+    src/switch_core_manager.cpp
     src/switch_guest_state.cpp
     src/switch_profiler.cpp
     src/switch_sub_23c30.c
@@ -148,12 +149,15 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_sub_240c0.c
     src/switch_sub_4b630.c
     src/switch_sub_69370.c
+    src/switch_sub_61b10.c
+    src/switch_sub_7ca00.c
     src/switch_sub_843d0.c
     src/switch_sub_2b670.c
     src/switch_bone_neon.c
     src/switch_math_neon.c
     src/switch_fast_mem_wrap.c
 )
+set_source_files_properties(src/switch_profiler.cpp PROPERTIES COMPILE_DEFINITIONS "SC2_PC_PROFILE=1")
 
 set(RECOMP_0001_SRC ${PROGRAM_DIR}/recomp_0001.c)
 if(EXISTS ${CMAKE_BINARY_DIR}/recomp_0001_prof.c)
@@ -333,6 +337,9 @@ target_link_options(soulcalibur2
     -Wl,--wrap=recomp_lookup_manual
     -Wl,--wrap=recomp_dispatch_indirect_site
     -Wl,--wrap=nanosleep
+    -Wl,--wrap=svcSetThreadCoreMask
+    -Wl,--wrap=sub_00061B10
+    -Wl,--wrap=sub_0007CA00
     -Wl,--wrap=recomp_audio_output_submit
     -Wl,--wrap=recomp_audio_output_reset_voice
     -Wl,--wrap=CreateFileA
