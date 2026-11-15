@@ -57,7 +57,22 @@ sdmc:/
 
 ## 🎮 Controls
 
-Standard Nintendo Switch controller layout (Xbox face buttons mapped positionally: **B** = A, **A** = B, **Y** = X, **X** = Y, **Plus (+)** = Start, **Minus (-)** = Back).
+All Xbox buttons are mapped positionally to the Nintendo Switch controller:
+
+| Switch Input | Xbox Equivalent | In-Game Action (Default) |
+| :--- | :--- | :--- |
+| **Left Stick / D-Pad** | Left Stick / D-Pad | Movement (8-Way Run) / Menu Navigation |
+| **`B`** | `A` | Guard (`G`) / Confirm |
+| **`A`** | `B` | Kick (`K`) / Cancel |
+| **`Y`** | `X` | Horizontal Attack (`A`) |
+| **`X`** | `Y` | Vertical Attack (`B`) |
+| **`L`** | `Black` | `A + B + K` (Soul Charge) |
+| **`R`** | `White` | `B + K` (Special / Taunt) |
+| **`ZL`** | `LT` (Left Trigger) | `A + G` (Throw) |
+| **`ZR`** | `RT` (Right Trigger) | `B + G` (Throw) |
+| **`Plus (+)`** | `Start` | Start / Pause Menu |
+| **`Minus (-)`** | `Back` | Back / Practice Options |
+| **`L3` / `R3`** *(Stick Clicks)* | `L-Thumb` / `R-Thumb` | Custom / Macro Bindings |
 
 ---
 
