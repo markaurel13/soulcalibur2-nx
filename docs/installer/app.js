@@ -67,6 +67,12 @@ function log(msg, level = "info") {
   box.scrollTop = box.scrollHeight;
 }
 
+function showRegionPopup(title, message) {
+  $("modal-title").textContent = title;
+  $("modal-message").textContent = message;
+  $("region-modal").hidden = false;
+}
+
 function setProgress(pct, label) {
   $("progress-wrap").hidden = false;
   $("progress-bar").style.width = `${Math.max(0, Math.min(100, pct))}%`;
@@ -154,7 +160,9 @@ async function handleXboxInput(fileList) {
               const gameRegion = dv.getUint32(certOff + 0xa0, true);
               if ((gameRegion & 0x00000001) === 0) {
                 for (const k of Object.keys(state.xbox)) state.xbox[k] = null;
-                log("Only USA (NTSC-U) Xbox copies are supported (this ISO is not North America region).", "error");
+                const msg = "This Xbox ISO is from another region (PAL or Japan). Please provide a USA (NTSC-U) copy of Soulcalibur II.";
+                log(msg, "error");
+                showRegionPopup("Unsupported Xbox Region", msg);
                 updateUI();
                 return;
               }
@@ -198,6 +206,12 @@ async function handleGameCubeInput(fileList) {
     log("GameCube ISO ready to extract Link.", "ok");
   } catch (err) {
     log(`Failed to read GameCube ISO: ${err.message}`, "error");
+    if (err.message.includes("USA (NTSC-U)")) {
+      showRegionPopup(
+        "Unsupported GameCube Region",
+        "This GameCube ISO is not a USA (NTSC-U) copy (GRSEAF). Please provide a USA copy of Soulcalibur II."
+      );
+    }
   }
   updateUI();
 }
@@ -229,6 +243,12 @@ async function handlePs2Input(fileList) {
     log("PS2 ISO ready to extract Heihachi.", "ok");
   } catch (err) {
     log(`Failed to read PS2 ISO: ${err.message}`, "error");
+    if (err.message.includes("USA (NTSC-U)")) {
+      showRegionPopup(
+        "Unsupported PS2 Region",
+        "This PS2 ISO is not a USA (NTSC-U) copy (SLUS_206.43). Please provide a USA copy of Soulcalibur II."
+      );
+    }
   }
   updateUI();
 }
@@ -489,5 +509,12 @@ document.addEventListener("DOMContentLoaded", () => {
   wireDropzone("drop-gc", "file-gc", handleGameCubeInput);
   wireDropzone("drop-ps2", "file-ps2", handlePs2Input);
   $("btn-build-zip").addEventListener("click", buildSwitchPackageZip);
+  $("modal-close").addEventListener("click", () => ($("region-modal").hidden = true));
+  $("region-modal").addEventListener("click", (e) => {
+    if (e.target === $("region-modal")) $("region-modal").hidden = true;
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") $("region-modal").hidden = true;
+  });
   updateUI();
 });

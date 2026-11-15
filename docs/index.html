@@ -147,6 +147,49 @@
     .log-ok { color: var(--ok); }
     .log-warn { color: var(--warn); }
     .log-error { color: var(--err); }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 999;
+      background: rgba(5, 7, 12, 0.78);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal-card {
+      width: 100%;
+      max-width: 440px;
+      background: linear-gradient(180deg, #191f33 0%, #111524 100%);
+      border: 1px solid rgba(230, 0, 18, 0.55);
+      border-radius: 18px;
+      padding: 26px 24px 22px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 32px rgba(230, 0, 18, 0.18);
+      text-align: center;
+      animation: popIn 0.16s ease-out;
+    }
+    @keyframes popIn {
+      from { opacity: 0; transform: scale(0.94); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .modal-icon {
+      width: 52px;
+      height: 52px;
+      margin: 0 auto 12px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      background: rgba(230, 0, 18, 0.14);
+      border: 1px solid rgba(230, 0, 18, 0.45);
+      color: #ff6b6b;
+    }
+    .modal-card h3 { margin: 0 0 8px; font-size: 1.2rem; color: var(--text); }
+    .modal-card p { margin: 0 0 20px; color: var(--muted); font-size: 0.94rem; line-height: 1.48; }
     footer { text-align: center; color: var(--muted); font-size: 0.82rem; margin-top: 24px; }
   </style>
 </head>
@@ -224,6 +267,15 @@
     <footer>
       Soulcalibur II NX does not host or distribute copyrighted ROMs, ISOs, or game assets. All processing happens locally in your browser.
     </footer>
+  </div>
+
+  <div id="region-modal" class="modal-backdrop" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-icon">⚠</div>
+      <h3 id="modal-title">USA (NTSC-U) Copy Required</h3>
+      <p id="modal-message"></p>
+      <button id="modal-close" class="btn btn-primary">Got It</button>
+    </div>
   </div>
 
   <script type="module" src="./installer/app.js"></script>
