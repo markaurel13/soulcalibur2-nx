@@ -126,10 +126,10 @@
 
     <section class="card">
       <h2>1. Base Disc — Xbox NTSC-U (Required)</h2>
-      <p>Drag &amp; drop your Soulcalibur II <strong>Xbox ISO (.iso / .xiso)</strong>, or the extracted files directly (<code>Default.xbe</code>, <code>root.olk</code>, <code>movie.afs</code>, <code>bgm.afs</code>). <em>Optional: you can also drop <code>soulcalibur2.nro</code> here to copy it alongside your game files.</em></p>
+      <p>Drag &amp; drop your Soulcalibur II <strong>Xbox ISO / XISO (<code>.iso</code> / <code>.xiso</code>)</strong> file.</p>
       <div class="dropzone" id="drop-xbox">
-        <input type="file" id="file-xbox" multiple accept=".iso,.xiso,.xbe,.olk,.afs,.nro" />
-        <strong>Click or drag &amp; drop your Xbox ISO here</strong><br />
+        <input type="file" id="file-xbox" accept=".iso,.xiso" />
+        <strong>Click or drag &amp; drop your Xbox ISO / XISO here</strong><br />
         <span style="color: var(--muted); font-size: 0.85rem;">Streaming read (does not load the full ISO into RAM)</span>
       </div>
       <div class="pills" id="xbox-status"></div>
@@ -137,21 +137,21 @@
 
     <section class="card">
       <h2>2. Guest Fighters — Link &amp; Heihachi (Required)</h2>
-      <p>Both <strong>Link</strong> (GameCube) and <strong>Heihachi</strong> (PS2) are required alongside Spawn. Drop your legal GameCube and PS2 (NTSC-U) ISOs below—<code>guests.olk</code> will be built directly in your browser.</p>
+      <p>Both <strong>Link</strong> (GameCube) and <strong>Heihachi</strong> (PS2) are required alongside Spawn. Drop your legal GameCube and PS2 (NTSC-U) ISO files below—<code>guests.olk</code> will be built directly in your browser.</p>
       <div class="grid-2">
         <div>
           <div class="dropzone" id="drop-gc">
-            <input type="file" id="file-gc" multiple accept=".iso,.gcm,.olk,.dol" />
+            <input type="file" id="file-gc" accept=".iso,.gcm" />
             <strong>GameCube ISO (Link)</strong><br />
-            <span style="color: var(--muted); font-size: 0.82rem;">.iso / .gcm or root.olk + boot.dol</span>
+            <span style="color: var(--muted); font-size: 0.82rem;">.iso / .gcm</span>
           </div>
           <div class="pills" id="gc-status"></div>
         </div>
         <div>
           <div class="dropzone" id="drop-ps2">
-            <input type="file" id="file-ps2" multiple accept=".iso,.olk,.43" />
+            <input type="file" id="file-ps2" accept=".iso" />
             <strong>PS2 ISO (Heihachi)</strong><br />
-            <span style="color: var(--muted); font-size: 0.82rem;">.iso or ROOT.OLK + SLUS_206.43</span>
+            <span style="color: var(--muted); font-size: 0.82rem;">.iso</span>
           </div>
           <div class="pills" id="ps2-status"></div>
         </div>
@@ -160,10 +160,9 @@
 
     <section class="card">
       <h2>3. Build Switch Package</h2>
-      <p>Generates your ready-to-extract Switch package (<code>switch/soulcalibur2/</code>) and downloads it automatically to your PC, or writes it directly to your microSD card.</p>
+      <p>Generates your ready-to-extract Switch package (<code>switch/soulcalibur2/</code>) and downloads it automatically to your PC.</p>
       <div class="actions">
         <button id="btn-build-zip" class="btn btn-primary" disabled>⚡ Build Switch Package</button>
-        <button id="btn-export-sd" class="btn btn-secondary" disabled>📁 Write Directly to microSD / Folder</button>
       </div>
       <div id="progress-wrap" hidden>
         <div class="progress-outer"><div id="progress-bar" class="progress-inner"></div></div>

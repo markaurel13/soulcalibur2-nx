@@ -98,120 +98,105 @@ function updateUI() {
 
   const canBuild = readyXbox && readyGc && readyPs2;
   $("btn-build-zip").disabled = !canBuild;
-  $("btn-export-sd").disabled = !canBuild;
-
-  if (!window.showDirectoryPicker) {
-    $("btn-export-sd").title = "Your browser does not support direct folder writing; use Chrome/Edge/Brave or Build Switch Package.";
-  }
 }
 
-// ---- 1. Handle Xbox Disc / Files ----
+// ---- 1. Handle Xbox Disc ----
 async function handleXboxInput(fileList) {
-  for (const file of fileList) {
-    const low = file.name.toLowerCase();
-    if (low.endsWith(".iso") || low.endsWith(".xiso")) {
-      log(`Reading XISO structure of '${file.name}' (${formatBytes(file.size)})...`);
-      try {
-        const entries = await DiscParsers.parseXboxIso(file);
-        const mapping = {
-          "default.xbe": "Default.xbe",
-          "root.olk": "root.olk",
-          "movie.afs": "movie.afs",
-          "bgm.afs": "bgm.afs",
-        };
-        let foundCount = 0;
-        for (const [key, outName] of Object.entries(mapping)) {
-          const entry = entries[key];
-          if (entry) {
-            state.xbox[key] = {
-              name: outName,
-              blob: file.slice(entry.offset, entry.offset + entry.size),
-            };
-            foundCount++;
-          }
-        }
-        if (foundCount === 0) {
-          log("Default.xbe / root.olk / movie.afs / bgm.afs were not found inside the ISO.", "error");
-        } else {
-          log(`Xbox ISO parsed: ${foundCount}/4 files ready (streaming, zero RAM copy).`, "ok");
-        }
-      } catch (err) {
-        log(`Failed to read Xbox ISO: ${err.message}`, "error");
-      }
-    } else if (low === "default.xbe" || low === "root.olk" || low === "movie.afs" || low === "bgm.afs") {
-      const canonical = {
-        "default.xbe": "Default.xbe",
-        "root.olk": "root.olk",
-        "movie.afs": "movie.afs",
-        "bgm.afs": "bgm.afs",
-      }[low];
-      state.xbox[low] = { name: canonical, blob: file };
-      log(`Loaded file: ${canonical} (${formatBytes(file.size)})`, "ok");
-    } else if (low.endsWith(".nro")) {
-      state.nroBlob = { name: file.name, blob: file };
-      log(`Loaded local NRO: ${file.name} (${formatBytes(file.size)})`, "ok");
+  const file = fileList[0];
+  if (!file) return;
+  const low = file.name.toLowerCase();
+  if (!low.endsWith(".iso") && !low.endsWith(".xiso")) {
+    log(`Unsupported file '${file.name}'. Please provide an Xbox .iso or .xiso file.`, "error");
+    return;
+  }
+
+  log(`Reading XISO structure of '${file.name}' (${formatBytes(file.size)})...`);
+  try {
+    const entries = await DiscParsers.parseXboxIso(file);
+    const mapping = {
+      "default.xbe": "Default.xbe",
+      "root.olk": "root.olk",
+      "movie.afs": "movie.afs",
+      "bgm.afs": "bgm.afs",
+    };
+    let foundCount = 0;
+    for (const [key, outName] of Object.entries(mapping)) {
+      const entry = entries[key];
+      state.xbox[key] = entry
+        ? { name: outName, blob: file.slice(entry.offset, entry.offset + entry.size) }
+        : null;
+      if (entry) foundCount++;
     }
+    if (foundCount === 0) {
+      log("Default.xbe / root.olk / movie.afs / bgm.afs were not found inside the ISO.", "error");
+    } else {
+      log(`Xbox ISO parsed: ${foundCount}/4 files ready (streaming, zero RAM copy).`, "ok");
+    }
+  } catch (err) {
+    log(`Failed to read Xbox ISO: ${err.message}`, "error");
   }
   updateUI();
 }
 
 // ---- 2. Handle GameCube / PS2 Discs ----
 async function handleGameCubeInput(fileList) {
-  for (const file of fileList) {
-    const low = file.name.toLowerCase();
-    if (low.endsWith(".iso") || low.endsWith(".gcm")) {
-      log(`Reading GameCube ISO '${file.name}'...`);
-      try {
-        const entries = await DiscParsers.parseGameCubeIso(file);
-        if (!entries["root.olk"] || !entries["boot.dol"]) {
-          throw new Error("Missing root.olk or boot.dol in the GameCube ISO.");
-        }
-        state.gc["root.olk"] = {
-          name: "root.olk",
-          blob: file.slice(entries["root.olk"].offset, entries["root.olk"].offset + entries["root.olk"].size),
-        };
-        state.gc["boot.dol"] = {
-          name: "boot.dol",
-          blob: file.slice(entries["boot.dol"].offset, entries["boot.dol"].offset + entries["boot.dol"].size),
-        };
-        log("GameCube ISO ready to extract Link.", "ok");
-      } catch (err) {
-        log(`Failed to read GameCube ISO: ${err.message}`, "error");
-      }
-    } else if (low === "root.olk" || low === "boot.dol") {
-      state.gc[low] = { name: low, blob: file };
-      log(`GameCube: loaded ${low} (${formatBytes(file.size)})`, "ok");
+  const file = fileList[0];
+  if (!file) return;
+  const low = file.name.toLowerCase();
+  if (!low.endsWith(".iso") && !low.endsWith(".gcm")) {
+    log(`Unsupported file '${file.name}'. Please provide a GameCube .iso or .gcm file.`, "error");
+    return;
+  }
+
+  log(`Reading GameCube ISO '${file.name}'...`);
+  try {
+    const entries = await DiscParsers.parseGameCubeIso(file);
+    if (!entries["root.olk"] || !entries["boot.dol"]) {
+      throw new Error("Missing root.olk or boot.dol in the GameCube ISO.");
     }
+    state.gc["root.olk"] = {
+      name: "root.olk",
+      blob: file.slice(entries["root.olk"].offset, entries["root.olk"].offset + entries["root.olk"].size),
+    };
+    state.gc["boot.dol"] = {
+      name: "boot.dol",
+      blob: file.slice(entries["boot.dol"].offset, entries["boot.dol"].offset + entries["boot.dol"].size),
+    };
+    state.guestsBlob = null;
+    log("GameCube ISO ready to extract Link.", "ok");
+  } catch (err) {
+    log(`Failed to read GameCube ISO: ${err.message}`, "error");
   }
   updateUI();
 }
 
 async function handlePs2Input(fileList) {
-  for (const file of fileList) {
-    const low = file.name.toLowerCase();
-    if (low.endsWith(".iso")) {
-      log(`Reading PS2 ISO '${file.name}'...`);
-      try {
-        const entries = await DiscParsers.parsePs2Iso(file);
-        if (!entries["root.olk"] || !entries["slus_206.43"]) {
-          throw new Error("Missing ROOT.OLK or SLUS_206.43 in the PS2 ISO (make sure to use Soulcalibur II USA).");
-        }
-        state.ps2["root.olk"] = {
-          name: "root.olk",
-          blob: file.slice(entries["root.olk"].offset, entries["root.olk"].offset + entries["root.olk"].size),
-        };
-        state.ps2["slus_206.43"] = {
-          name: "SLUS_206.43",
-          blob: file.slice(entries["slus_206.43"].offset, entries["slus_206.43"].offset + entries["slus_206.43"].size),
-        };
-        log("PS2 ISO ready to extract Heihachi.", "ok");
-      } catch (err) {
-        log(`Failed to read PS2 ISO: ${err.message}`, "error");
-      }
-    } else if (low === "root.olk" || low === "slus_206.43") {
-      state.ps2[low] = { name: file.name, blob: file };
-      log(`PS2: loaded ${file.name} (${formatBytes(file.size)})`, "ok");
+  const file = fileList[0];
+  if (!file) return;
+  const low = file.name.toLowerCase();
+  if (!low.endsWith(".iso")) {
+    log(`Unsupported file '${file.name}'. Please provide a PS2 .iso file.`, "error");
+    return;
+  }
+
+  log(`Reading PS2 ISO '${file.name}'...`);
+  try {
+    const entries = await DiscParsers.parsePs2Iso(file);
+    if (!entries["root.olk"] || !entries["slus_206.43"]) {
+      throw new Error("Missing ROOT.OLK or SLUS_206.43 in the PS2 ISO (make sure to use Soulcalibur II USA).");
     }
+    state.ps2["root.olk"] = {
+      name: "root.olk",
+      blob: file.slice(entries["root.olk"].offset, entries["root.olk"].offset + entries["root.olk"].size),
+    };
+    state.ps2["slus_206.43"] = {
+      name: "SLUS_206.43",
+      blob: file.slice(entries["slus_206.43"].offset, entries["slus_206.43"].offset + entries["slus_206.43"].size),
+    };
+    state.guestsBlob = null;
+    log("PS2 ISO ready to extract Heihachi.", "ok");
+  } catch (err) {
+    log(`Failed to read PS2 ISO: ${err.message}`, "error");
   }
   updateUI();
 }
@@ -472,6 +457,5 @@ document.addEventListener("DOMContentLoaded", () => {
   wireDropzone("drop-gc", "file-gc", handleGameCubeInput);
   wireDropzone("drop-ps2", "file-ps2", handlePs2Input);
   $("btn-build-zip").addEventListener("click", buildSwitchPackageZip);
-  $("btn-export-sd").addEventListener("click", exportToDirectory);
   updateUI();
 });
