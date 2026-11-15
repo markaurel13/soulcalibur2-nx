@@ -25,6 +25,40 @@ endif()
 
 option(SC2_ENABLE_LTO "Enable Link-Time Optimization (disable for fast incremental dev builds)" OFF)
 option(SC2_GUEST_PROF "Enable per-function --wrap guest profiling" OFF)
+option(SC2_PGO_GENERATE "Instrument Switch build for PGO data collection" OFF)
+set(SC2_PGO_USE "" CACHE PATH "Path to collected .gcda directory for PGO-optimized final build")
+set(SC2_PGO_OUT_DIR "sdmc:/switch/soulcalibur2/pgo" CACHE STRING "On-device SD path for .gcda output")
+
+if(SC2_PGO_GENERATE AND NOT "${SC2_PGO_USE}" STREQUAL "")
+    message(FATAL_ERROR "SC2_PGO_GENERATE and SC2_PGO_USE are mutually exclusive")
+endif()
+
+set(_SC2_PGO_COMPILE_FLAGS "")
+set(_SC2_PGO_LINK_FLAGS "")
+if(SC2_PGO_GENERATE)
+    list(APPEND _SC2_PGO_COMPILE_FLAGS
+        "-fprofile-generate=${SC2_PGO_OUT_DIR}"
+        "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+        "-Wno-coverage-mismatch"
+    )
+    list(APPEND _SC2_PGO_LINK_FLAGS
+        "-fprofile-generate=${SC2_PGO_OUT_DIR}"
+        "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+    )
+elseif(NOT "${SC2_PGO_USE}" STREQUAL "")
+    list(APPEND _SC2_PGO_COMPILE_FLAGS
+        "-fprofile-use=${SC2_PGO_USE}"
+        "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+        "-fprofile-correction"
+        "-Wno-missing-profile"
+        "-Wno-coverage-mismatch"
+    )
+    list(APPEND _SC2_PGO_LINK_FLAGS
+        "-fprofile-use=${SC2_PGO_USE}"
+        "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+        "-fprofile-correction"
+    )
+endif()
 
 set(_CHUNK_NAMES
     recomp_0000.c
@@ -108,6 +142,7 @@ add_compile_options(
     -ftree-vectorize
     -fomit-frame-pointer
     $<$<AND:$<BOOL:${SC2_ENABLE_LTO}>,$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>>:-flto=4>
+    ${_SC2_PGO_COMPILE_FLAGS}
     -Wall
     -Wno-unused-variable
     -Wno-unused-label
@@ -120,6 +155,8 @@ add_compile_definitions(
     __SWITCH__=1
     main=sc2_runner_main
     $<$<BOOL:${SC2_GUEST_PROF}>:SC2_GUEST_PROF=1>
+    $<$<BOOL:${SC2_PGO_GENERATE}>:SWITCH_PGO_GENERATE=1>
+    $<$<BOOL:${SC2_PGO_GENERATE}>:SWITCH_PGO_OUT_DIR=\"${SC2_PGO_OUT_DIR}\">
 )
 
 include_directories(
@@ -309,6 +346,7 @@ target_link_options(soulcalibur2
     PRIVATE
     -O3
     $<$<BOOL:${SC2_ENABLE_LTO}>:-flto=4>
+    ${_SC2_PGO_LINK_FLAGS}
     -ffp-contract=off
     -fno-math-errno
     -fno-trapping-math
@@ -504,9 +542,13 @@ target_link_options(soulcalibur2
 
 
 
-nx_create_nro(soulcalibur2
+nx_generate_nacp(soulcalibur2.nacp
     NAME "Soulcalibur II"
-    AUTHOR "tmcleroy / Switch Port"
+    AUTHOR "markaurel13"
     VERSION "0.4.0"
-    ICON ${CMAKE_CURRENT_SOURCE_DIR}/../docs/screenshots/select-link-heihachi.jpg
+)
+
+nx_create_nro(soulcalibur2
+    NACP ${CMAKE_CURRENT_BINARY_DIR}/soulcalibur2.nacp
+    ICON ${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.jpg
 )

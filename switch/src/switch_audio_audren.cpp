@@ -17,14 +17,19 @@ static constexpr uint32_t STAGING_CAP_FRAMES = 4096; // 4096 frames * 4 bytes = 
 
 struct HwVoiceState {
     bool active = false;
+    bool was_playing = false;
+    bool has_prev_sample = false;
     uint32_t guest_slot = 0xFFFFFFFFu;
     uint32_t base_sample_rate = 0;
     uint32_t sample_rate = 0;
     uint32_t channels = 0;
     uint64_t last_tick = 0;
+    uint64_t last_submit_tick = 0;
     float dry_left = 1.0f;
     float dry_right = 1.0f;
     int32_t last_vol_db = 0;
+    int16_t prev_sample_l = 0;
+    int16_t prev_sample_r = 0;
     uint32_t staging_frames = 0;
     int16_t staging_pcm[STAGING_CAP_FRAMES * 2] = {};
     AudioDriverWaveBuf wavebufs[WAVEBUFS_PER_VOICE] = {};
@@ -63,31 +68,65 @@ static uint32_t s_perf_updates = 0, s_perf_submits = 0;
 struct AudioDiagStats {
     uint32_t commits = 0;
     uint32_t wb_full_fail = 0;
+    uint32_t wb_no_free = 0;
+    uint32_t wb_too_big = 0;
     uint32_t pcm_drop_frames = 0;
     uint32_t underruns = 0;
+    uint32_t flush_underruns = 0;
     uint32_t steals = 0;
     uint32_t voice_inits = 0;
+    uint32_t init_fail = 0;
+    uint32_t resets = 0;
+    uint32_t resets_playing = 0;
     uint32_t rate_changes = 0;
     uint32_t max_active_voices = 0;
+    uint32_t min_wb_queued = 99u;
     uint32_t max_wb_queued = 0;
     uint32_t audrv_rc_fail = 0;
     uint64_t last_audrv_tick = 0;
     double max_audrv_gap_ms = 0.0;
     uint64_t last_submit_tick = 0;
     double max_submit_gap_ms = 0.0;
+    uint64_t last_flush_tick = 0;
+    double max_flush_period_ms = 0.0;
+    double max_mutex_wait_ms = 0.0;
     int32_t peak_pcm = 0;
     uint32_t clipped_pcm = 0;
+    uint32_t float_over_1 = 0;
+    uint32_t pcm_jumps = 0;
+    int32_t max_pcm_jump = 0;
     int64_t pcm_sum = 0;
     uint64_t pcm_samples = 0;
+    uint64_t total_frames_sub = 0;
+    uint64_t total_frames_com = 0;
     int32_t min_vol_db = 0;
     int32_t max_vol_db = -99999;
     float max_gain = 0.0f;
     float max_sum_gain = 0.0f;
+    float peak_sum_gain = 0.0f;
+    float peak_rms_gain = 0.0f;
+    float min_final_mix = 99.0f;
+    float max_final_mix = 0.0f;
+    float max_dry_routing = 0.0f;
+    uint32_t routing_gt1 = 0;
+    float min_pitch = 99.0f;
+    float max_pitch = 0.0f;
     uint32_t min_rate = 999999u;
     uint32_t max_rate = 0u;
     uint32_t ch1 = 0, ch2 = 0, ch_gt2 = 0;
+    uint32_t bits8 = 0, bits16 = 0, bits32 = 0, bits_other = 0;
+    uint32_t warn_printed = 0;
+    uint32_t detail_printed = 0;
 };
 static AudioDiagStats s_adiag;
+
+#define AUDIO_WARN_THROTTLED(fmt, ...) \
+    do { \
+        if (s_adiag.warn_printed < 8u) { \
+            ++s_adiag.warn_printed; \
+            printf("[AudioWarn] " fmt "\n", ##__VA_ARGS__); \
+        } \
+    } while (0)
 
 static Result perfAudrvUpdate() {
     uint64_t t0 = armGetSystemTick();
@@ -135,19 +174,33 @@ extern "C" void SwitchAudio_PrintAndResetDiag(void) {
     if (cur_active > s_adiag.max_active_voices) s_adiag.max_active_voices = cur_active;
 
     double dc_avg = s_adiag.pcm_samples ? (double)s_adiag.pcm_sum / (double)s_adiag.pcm_samples : 0.0;
-    printf("[AudioDiag] v=%u(max=%u,init=%u,steal=%u) wb(c=%u,full=%u,drop=%u,under=%u,maxq=%u) gap(upd=%.1fms,sub=%.1fms) pcm(peak=%d,clip=%u,dc=%.1f) gain(max=%.2f,sum=%.2f,mix=%.2f,vol=%d..%d) fmt(r=%u..%u,rc=%u,ch1=%u,ch2=%u,ch+=%u) err=%u\n",
-           cur_active, s_adiag.max_active_voices, s_adiag.voice_inits, s_adiag.steals,
-           s_adiag.commits, s_adiag.wb_full_fail, s_adiag.pcm_drop_frames, s_adiag.underruns, s_adiag.max_wb_queued,
-           s_adiag.max_audrv_gap_ms, s_adiag.max_submit_gap_ms,
-           s_adiag.peak_pcm, s_adiag.clipped_pcm, dc_avg,
-           s_adiag.max_gain, s_adiag.max_sum_gain, s_final_mix_vol, s_adiag.min_vol_db, s_adiag.max_vol_db,
+    printf("[AudioDiag] v=%u(max=%u,init=%u,fail=%u,steal=%u,rst=%u/%u) wb(c=%u,full=%u,nofree=%u,big=%u,drop=%u,under=%u/%u,q=%u..%u) frames(sub=%llu,com=%llu) gap(upd=%.1fms,sub=%.1fms,fl=%.1fms,mtx=%.2fms) err=%u\n",
+           cur_active, s_adiag.max_active_voices, s_adiag.voice_inits, s_adiag.init_fail, s_adiag.steals,
+           s_adiag.resets, s_adiag.resets_playing,
+           s_adiag.commits, s_adiag.wb_full_fail, s_adiag.wb_no_free, s_adiag.wb_too_big, s_adiag.pcm_drop_frames,
+           s_adiag.underruns, s_adiag.flush_underruns,
+           s_adiag.min_wb_queued == 99u ? 0u : s_adiag.min_wb_queued, s_adiag.max_wb_queued,
+           (unsigned long long)s_adiag.total_frames_sub, (unsigned long long)s_adiag.total_frames_com,
+           s_adiag.max_audrv_gap_ms, s_adiag.max_submit_gap_ms, s_adiag.max_flush_period_ms, s_adiag.max_mutex_wait_ms,
+           s_adiag.audrv_rc_fail);
+    printf("[AudioQual] pcm(peak=%d,clip=%u,jmp=%u,maxjmp=%d,dc=%.1f,fovf=%u) gain(max=%.2f,sum=%.2f/%.2f,rms=%.2f,dry=%.2f,gt1=%u,mix=%.2f..%.2f,vol=%d..%d) fmt(r=%u..%u,rc=%u,pitch=%.2f..%.2f,ch=%u/%u/%u,b=%u/%u/%u/%u)\n",
+           s_adiag.peak_pcm, s_adiag.clipped_pcm, s_adiag.pcm_jumps, s_adiag.max_pcm_jump, dc_avg, s_adiag.float_over_1,
+           s_adiag.max_gain, s_adiag.max_sum_gain, s_adiag.peak_sum_gain, s_adiag.peak_rms_gain, s_adiag.max_dry_routing, s_adiag.routing_gt1,
+           s_adiag.min_final_mix > 10.0f ? s_final_mix_vol : s_adiag.min_final_mix,
+           s_adiag.max_final_mix < 0.01f ? s_final_mix_vol : s_adiag.max_final_mix,
+           s_adiag.min_vol_db, s_adiag.max_vol_db,
            s_adiag.min_rate == 999999u ? 0u : s_adiag.min_rate, s_adiag.max_rate, s_adiag.rate_changes,
-           s_adiag.ch1, s_adiag.ch2, s_adiag.ch_gt2, s_adiag.audrv_rc_fail);
+           s_adiag.min_pitch > 10.0f ? 1.0f : s_adiag.min_pitch,
+           s_adiag.max_pitch < 0.01f ? 1.0f : s_adiag.max_pitch,
+           s_adiag.ch1, s_adiag.ch2, s_adiag.ch_gt2,
+           s_adiag.bits8, s_adiag.bits16, s_adiag.bits32, s_adiag.bits_other);
     uint64_t keep_audrv = s_adiag.last_audrv_tick;
     uint64_t keep_sub = s_adiag.last_submit_tick;
+    uint64_t keep_flush = s_adiag.last_flush_tick;
     s_adiag = AudioDiagStats{};
     s_adiag.last_audrv_tick = keep_audrv;
     s_adiag.last_submit_tick = keep_sub;
+    s_adiag.last_flush_tick = keep_flush;
 }
 
 static int countActiveWavebufs(const HwVoiceState &v) {
@@ -182,13 +235,19 @@ static bool commitVoiceStaging(int hw_idx) {
             break;
         }
     }
-    if (wb_idx < 0) return false;
+    if (wb_idx < 0) {
+        ++s_adiag.wb_no_free;
+        AUDIO_WARN_THROTTLED("wb_no_free hw=%d slot=%u active_wbs=%d", hw_idx, v.guest_slot, active_wbs);
+        return false;
+    }
 
     uint32_t num_frames = v.staging_frames;
     uint32_t dst_ch = v.channels;
     size_t dst_bytes = (size_t)num_frames * dst_ch * sizeof(int16_t);
     size_t aligned_bytes = (dst_bytes + 63u) & ~size_t(63u);
     if (aligned_bytes > PER_WAVEBUF_BYTES) {
+        ++s_adiag.wb_too_big;
+        AUDIO_WARN_THROTTLED("wb_too_big hw=%d slot=%u bytes=%zu", hw_idx, v.guest_slot, aligned_bytes);
         v.staging_frames = 0;
         return false;
     }
@@ -217,7 +276,10 @@ static bool commitVoiceStaging(int hw_idx) {
     v.staging_frames = 0;
     s_wavebuf_counter++;
     ++s_adiag.commits;
-    if ((uint32_t)(active_wbs + 1) > s_adiag.max_wb_queued) s_adiag.max_wb_queued = (uint32_t)(active_wbs + 1);
+    s_adiag.total_frames_com += num_frames;
+    uint32_t q_after = (uint32_t)(active_wbs + 1);
+    if (q_after < s_adiag.min_wb_queued) s_adiag.min_wb_queued = q_after;
+    if (q_after > s_adiag.max_wb_queued) s_adiag.max_wb_queued = q_after;
     return true;
 }
 
@@ -285,9 +347,12 @@ static int acquireHwVoice(uint32_t guest_slot, uint32_t sample_rate, uint32_t ds
         if (chosen < 0) chosen = 0;
         if (s_hw_voices[chosen].active) {
             ++s_adiag.steals;
+            AUDIO_WARN_THROTTLED("steal hw=%d old_slot=%u -> new_slot=%u", chosen, s_hw_voices[chosen].guest_slot, guest_slot);
             audrvVoiceStop(&s_drv, chosen);
             audrvVoiceDrop(&s_drv, chosen);
             s_hw_voices[chosen].active = false;
+            s_hw_voices[chosen].was_playing = false;
+            s_hw_voices[chosen].has_prev_sample = false;
         }
     }
 
@@ -301,11 +366,16 @@ static int acquireHwVoice(uint32_t guest_slot, uint32_t sample_rate, uint32_t ds
             v.active = false;
         }
         if (!audrvVoiceInit(&s_drv, chosen, (int)dst_channels, PcmFormat_Int16, (float)rate)) {
+            ++s_adiag.init_fail;
+            AUDIO_WARN_THROTTLED("voiceInit fail hw=%d slot=%u ch=%u rate=%u", chosen, guest_slot, dst_channels, rate);
             return -1;
         }
         audrvVoiceSetDestinationMix(&s_drv, chosen, AUDREN_FINAL_MIX_ID);
         audrvVoiceSetPitch(&s_drv, chosen, 1.0f);
         v.active = true;
+        v.was_playing = true;
+        v.has_prev_sample = false;
+        v.last_submit_tick = 0;
         v.guest_slot = guest_slot;
         v.base_sample_rate = rate;
         v.sample_rate = rate;
@@ -327,12 +397,21 @@ static int acquireHwVoice(uint32_t guest_slot, uint32_t sample_rate, uint32_t ds
     } else {
         if (countActiveWavebufs(v) == 0 && v.staging_frames == 0) {
             ++s_adiag.underruns;
+            if (v.last_submit_tick != 0 && s_adiag.detail_printed < 10u) {
+                ++s_adiag.detail_printed;
+                double vgap = (double)(armGetSystemTick() - v.last_submit_tick) / 19200.0;
+                printf("[AudioUnder] slot=%u hw=%d gap=%.1fms rate=%u ch=%u\n",
+                       guest_slot, chosen, vgap, rate, dst_channels);
+            }
         }
         if (v.sample_rate != rate) {
             v.sample_rate = rate;
             ++s_adiag.rate_changes;
-            float pitch = (v.base_sample_rate > 0) ? ((float)rate / (float)v.base_sample_rate) : 1.0f;
-            audrvVoiceSetPitch(&s_drv, chosen, std::clamp(pitch, 0.05f, 4.0f));
+            float raw_pitch = (v.base_sample_rate > 0) ? ((float)rate / (float)v.base_sample_rate) : 1.0f;
+            float pitch = std::clamp(raw_pitch, 0.05f, 4.0f);
+            if (pitch < s_adiag.min_pitch) s_adiag.min_pitch = pitch;
+            if (pitch > s_adiag.max_pitch) s_adiag.max_pitch = pitch;
+            audrvVoiceSetPitch(&s_drv, chosen, pitch);
         }
     }
 
@@ -343,29 +422,55 @@ static int acquireHwVoice(uint32_t guest_slot, uint32_t sample_rate, uint32_t ds
 static void flushAudioInternal(void) {
     if (!s_audio_initialized) return;
     PerfScope perf_scope(&s_perf_flush_ticks);
+    uint64_t t_wait0 = armGetSystemTick();
     ScopedAudioMutex lock;
+    uint64_t t_enter = armGetSystemTick();
+    double wait_ms = (double)(t_enter - t_wait0) / 19200.0;
+    if (wait_ms > s_adiag.max_mutex_wait_ms) s_adiag.max_mutex_wait_ms = wait_ms;
+    if (s_adiag.last_flush_tick != 0) {
+        double fgap = (double)(t_enter - s_adiag.last_flush_tick) / 19200.0;
+        if (fgap > s_adiag.max_flush_period_ms) s_adiag.max_flush_period_ms = fgap;
+    }
+    s_adiag.last_flush_tick = t_enter;
+
     float sum_sq = 0.0f;
+    float inst_sum_gain = 0.0f;
     for (int i = 0; i < MAX_HW_VOICES; ++i) {
         if (!s_hw_voices[i].active) continue;
-        if (s_hw_voices[i].staging_frames > 0 && countActiveWavebufs(s_hw_voices[i]) < 4) {
+        int wbs_before = countActiveWavebufs(s_hw_voices[i]);
+        if (s_hw_voices[i].staging_frames > 0 && wbs_before < 4) {
             commitVoiceStaging(i);
+            wbs_before = countActiveWavebufs(s_hw_voices[i]);
         }
-        if (audrvVoiceIsPlaying(&s_drv, i)) {
+        bool playing = audrvVoiceIsPlaying(&s_drv, i);
+        if (!playing && s_hw_voices[i].was_playing && wbs_before == 0 && s_hw_voices[i].staging_frames == 0) {
+            ++s_adiag.flush_underruns;
+        }
+        s_hw_voices[i].was_playing = playing;
+        if (playing) {
             float dg = (s_hw_voices[i].last_vol_db <= -9600) ? 0.0f :
                        (s_hw_voices[i].last_vol_db < 0 ? std::pow(10.0f, (float)s_hw_voices[i].last_vol_db / 2000.0f) : 1.0f);
             float g = dg * std::max(s_hw_voices[i].dry_left, s_hw_voices[i].dry_right);
             sum_sq += g * g;
+            inst_sum_gain += g;
         }
     }
+    if (inst_sum_gain > s_adiag.peak_sum_gain) s_adiag.peak_sum_gain = inst_sum_gain;
     float rms_gain = std::sqrt(sum_sq);
-    float target_mix = std::max(0.78f, std::min(0.95f, 1.25f / std::max(1.0f, rms_gain)));
-    float alpha = (target_mix < s_final_mix_vol) ? 0.25f : 0.05f;
+    if (rms_gain > s_adiag.peak_rms_gain) s_adiag.peak_rms_gain = rms_gain;
+    // Evita saturacion del bus maestro de audren cuando 10-22 voces se solapan
+    // (peak_sum_gain hasta ~3.4x aunque rms_gain sea < 1.0).
+    float effective_load = std::max(rms_gain, inst_sum_gain * 0.58f);
+    float target_mix = std::clamp(1.05f / std::max(1.0f, effective_load), 0.45f, 0.92f);
+    float alpha = (target_mix < s_final_mix_vol) ? 0.50f : 0.03f;
     s_final_mix_vol += (target_mix - s_final_mix_vol) * alpha;
+    if (s_final_mix_vol < s_adiag.min_final_mix) s_adiag.min_final_mix = s_final_mix_vol;
+    if (s_final_mix_vol > s_adiag.max_final_mix) s_adiag.max_final_mix = s_final_mix_vol;
     audrvMixSetVolume(&s_drv, AUDREN_FINAL_MIX_ID, s_final_mix_vol);
 
     static uint64_t s_last_audrv_tick = 0;
     uint64_t now = armGetSystemTick();
-    if ((now - s_last_audrv_tick) >= (10ULL * 19200ULL)) {
+    if ((now - s_last_audrv_tick) >= (5ULL * 19200ULL)) {
         s_last_audrv_tick = now;
         perfAudrvUpdate();
     }
@@ -378,7 +483,7 @@ static std::atomic<bool> s_audio_flush_thread_active{false};
 
 static void audioFlushWorker(void*) {
     while (s_audio_flush_running.load(std::memory_order_acquire)) {
-        svcSleepThread(10000000ULL); // 10 ms
+        svcSleepThread(5000000ULL); // 5 ms
         if (!s_audio_flush_running.load(std::memory_order_acquire)) break;
         flushAudioInternal();
     }
@@ -523,15 +628,21 @@ void recomp_audio_output_shutdown(void) {
 
 void recomp_audio_output_reset_voice(uint32_t slot) {
     ScopedAudioMutex lock;
+    ++s_adiag.resets;
     if (slot < 256) {
         s_guest_routing[slot] = {};
     }
     if (!s_audio_initialized) return;
     for (int i = 0; i < MAX_HW_VOICES; ++i) {
         if (s_hw_voices[i].active && s_hw_voices[i].guest_slot == slot) {
+            if (countActiveWavebufs(s_hw_voices[i]) > 0 || s_hw_voices[i].staging_frames > 0) {
+                ++s_adiag.resets_playing;
+            }
             audrvVoiceStop(&s_drv, i);
             audrvVoiceDrop(&s_drv, i);
             s_hw_voices[i].active = false;
+            s_hw_voices[i].was_playing = false;
+            s_hw_voices[i].has_prev_sample = false;
             s_hw_voices[i].staging_frames = 0;
             perfAudrvUpdate();
             break;
@@ -594,6 +705,9 @@ int recomp_audio_output_set_voice_routing(uint32_t slot, uint32_t channels,
     s_guest_routing[slot].configured = true;
     s_guest_routing[slot].left = l;
     s_guest_routing[slot].right = r;
+    float dry_max = std::max(l, r);
+    if (dry_max > s_adiag.max_dry_routing) s_adiag.max_dry_routing = dry_max;
+    if (dry_max > 1.01f) ++s_adiag.routing_gt1;
 
     if (s_audio_initialized) {
         for (int i = 0; i < MAX_HW_VOICES; ++i) {
@@ -643,6 +757,11 @@ void recomp_audio_output_submit(
         if (channels == 1u) ++s_adiag.ch1;
         else if (channels == 2u) ++s_adiag.ch2;
         else ++s_adiag.ch_gt2;
+        if (bits_per_sample == 8u) ++s_adiag.bits8;
+        else if (bits_per_sample == 16u) ++s_adiag.bits16;
+        else if (bits_per_sample == 32u) ++s_adiag.bits32;
+        else ++s_adiag.bits_other;
+        s_adiag.total_frames_sub += num_frames;
     }
 
     static uint32_t s_log_submits = 0;
@@ -661,7 +780,9 @@ void recomp_audio_output_submit(
         if (space == 0) {
             if (!commitVoiceStaging(hw_idx)) {
                 // Staging buffer and wavebufs are full; skip remaining frames to avoid blocking
-                s_adiag.pcm_drop_frames += (num_frames - frame_cursor);
+                uint32_t drop_f = num_frames - frame_cursor;
+                s_adiag.pcm_drop_frames += drop_f;
+                AUDIO_WARN_THROTTLED("pcm_drop slot=%u hw=%d dropped=%u rate=%u", slot, hw_idx, drop_f, sample_rate);
                 break;
             }
             space = STAGING_CAP_FRAMES - v.staging_frames;
@@ -690,12 +811,39 @@ void recomp_audio_output_submit(
             const float *srcf = reinterpret_cast<const float*>(src_chunk);
             for (uint32_t f = 0; f < chunk_frames; ++f) {
                 for (uint32_t c = 0; c < dst_ch; ++c) {
-                    float s = std::clamp(srcf[f * channels + c], -1.0f, 1.0f);
+                    float raw_s = srcf[f * channels + c];
+                    if (raw_s > 1.0f || raw_s < -1.0f) ++s_adiag.float_over_1;
+                    float s = std::clamp(raw_s, -1.0f, 1.0f);
                     dst[f * dst_ch + c] = (int16_t)(s * 32767.0f);
                 }
             }
         } else {
             memset(dst, 0, (size_t)chunk_frames * dst_ch * sizeof(int16_t));
+        }
+
+        if (chunk_frames > 0) {
+            int16_t first_l = dst[0];
+            int16_t first_r = (dst_ch >= 2) ? dst[1] : dst[0];
+            if (v.has_prev_sample) {
+                int32_t jl = std::abs((int32_t)first_l - (int32_t)v.prev_sample_l);
+                int32_t jr = std::abs((int32_t)first_r - (int32_t)v.prev_sample_r);
+                int32_t j = std::max(jl, jr);
+                if (j > s_adiag.max_pcm_jump) s_adiag.max_pcm_jump = j;
+                if (j > 12000) {
+                    ++s_adiag.pcm_jumps;
+                    if (s_adiag.detail_printed < 10u) {
+                        ++s_adiag.detail_printed;
+                        double vgap = v.last_submit_tick ? (double)(armGetSystemTick() - v.last_submit_tick) / 19200.0 : 0.0;
+                        printf("[AudioJump] slot=%u hw=%d jmp=%d (%d->%d) gap=%.1fms wbs=%d stg=%u rate=%u\n",
+                               slot, hw_idx, j, (int)v.prev_sample_l, (int)first_l, vgap,
+                               countActiveWavebufs(v), v.staging_frames, sample_rate);
+                    }
+                }
+            }
+            uint32_t last_off = (chunk_frames - 1u) * dst_ch;
+            v.prev_sample_l = dst[last_off];
+            v.prev_sample_r = (dst_ch >= 2) ? dst[last_off + 1] : dst[last_off];
+            v.has_prev_sample = true;
         }
 
         {
@@ -715,11 +863,15 @@ void recomp_audio_output_submit(
 
         int active_wbs = countActiveWavebufs(v);
         uint32_t min_coalesce_frames = std::max(256u, v.sample_rate / 50u); // ~20ms
-        if (active_wbs < 2 || v.staging_frames >= min_coalesce_frames) {
+        uint32_t low_q_frames = std::max(64u, v.sample_rate / 250u);       // ~4ms
+        if (active_wbs == 0 ||
+            (active_wbs == 1 && v.staging_frames >= low_q_frames) ||
+            v.staging_frames >= min_coalesce_frames) {
             commitVoiceStaging(hw_idx);
         }
     }
 
+    v.last_submit_tick = armGetSystemTick();
     s_submit_counter++;
 }
 

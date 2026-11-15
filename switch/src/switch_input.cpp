@@ -4,6 +4,10 @@
 #include <cstring>
 #include "input_model.h"
 
+#ifdef SWITCH_PGO_GENERATE
+extern "C" void __gcov_dump(void);
+#endif
+
 static bool s_gpu_vtx_enabled = true;
 static bool s_fps_overlay_enabled = false;
 
@@ -31,7 +35,8 @@ bool s_initialized = false;
 void Initialize() {
     if (s_initialized) return;
 
-    padConfigureInput(4, HidNpadStyleSet_NpadStandard);
+    // Solo mandos completos (Handheld, Pro Controller, Joy-Con dual); sin Joy-Con horizontal individual.
+    padConfigureInput(4, HidNpadStyleSet_NpadFullCtrl);
 
     padInitializeDefault(&s_pads[0]);
     for (int i = 1; i < 4; i++) {
@@ -68,6 +73,9 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
     }
 
     padUpdate(&SwitchInput::s_pads[port]);
+    if (port > 0 && !padIsConnected(&SwitchInput::s_pads[port])) {
+        return false;
+    }
     u64 kHeld = padGetButtons(&SwitchInput::s_pads[port]);
     HidAnalogStickState lStick = padGetStickPos(&SwitchInput::s_pads[port], 0);
     HidAnalogStickState rStick = padGetStickPos(&SwitchInput::s_pads[port], 1);
@@ -98,6 +106,18 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
                        s_fps_overlay_enabled ? "ENABLED" : "DISABLED");
             }
         }
+#ifdef SWITCH_PGO_GENERATE
+        // ZL + ZR + Plus: Dump PGO .gcda files to SD while in-game
+        static uint64_t s_last_pgo_dump_tick = 0;
+        if (now_tick - s_last_pgo_dump_tick > 38400000ULL) { // 2.0s debounce
+            if ((kHeld & HidNpadButton_ZL) && (kHeld & HidNpadButton_ZR) && (kHeld & HidNpadButton_Plus)) {
+                s_last_pgo_dump_tick = now_tick;
+                printf("[PGO] Volcando perfil .gcda a %s...\n", SWITCH_PGO_OUT_DIR);
+                __gcov_dump();
+                printf("[PGO] Volcado completado.\n");
+            }
+        }
+#endif
     }
 
     gamepad->thumb_lx = (int16_t)lStick.x;
@@ -164,7 +184,9 @@ uint64_t recomp_input_host_pad_buttons(void) {
     if (kHeld & HidNpadButton_A) mask |= (1ULL << SDL_BTN_EAST);
     if (kHeld & HidNpadButton_Y) mask |= (1ULL << SDL_BTN_WEST);
     if (kHeld & HidNpadButton_X) mask |= (1ULL << SDL_BTN_NORTH);
-    if (kHeld & HidNpadButton_Minus) mask |= (1ULL << SDL_BTN_BACK);
+    // No exponer Minus como SDL_BTN_BACK al runtime de PC (sc2_menu::OpenHeld / runner):
+    // en Switch el menú de PC no se renderiza y congelaba la emulación y el audio.
+    // El juego original sigue recibiendo Minus como Xbox Back vía recomp_input_host_sample().
     if (kHeld & HidNpadButton_Plus) mask |= (1ULL << SDL_BTN_START);
     if (kHeld & HidNpadButton_StickL) mask |= (1ULL << SDL_BTN_LEFT_STICK);
     if (kHeld & HidNpadButton_StickR) mask |= (1ULL << SDL_BTN_RIGHT_STICK);

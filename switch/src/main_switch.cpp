@@ -174,11 +174,20 @@ static devoptab_t s_log_devoptab = {
     NULL, NULL, NULL
 };
 
+#ifdef SWITCH_PGO_GENERATE
+extern "C" void __gcov_dump(void);
+#endif
+
 static void cleanup_switch_services(void) {
     if (s_cleaned_up) return;
     s_cleaned_up = true;
 
     printf("[Main] Ejecutando limpieza ordenada de subsistemas (atexit)...\n");
+
+#ifdef SWITCH_PGO_GENERATE
+    printf("[PGO] Guardando datos de perfil (.gcda) en %s...\n", SWITCH_PGO_OUT_DIR);
+    __gcov_dump();
+#endif
 
     // 1. Shut down audio and 3D presenter while Deko3D / audren resources are still valid
     recomp_dsound_api_shutdown();

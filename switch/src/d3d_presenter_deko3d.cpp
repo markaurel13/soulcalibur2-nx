@@ -111,8 +111,16 @@ struct PerfStats {
     struct PacingMissRec {
         uint32_t frame;
         double wall_ms, back_ms, draw_ms, vtx_ms, acq_ms, fence_ms, pres_ms;
-    } pacing_misses[3] = {};
+        uint32_t draws, tex_up;
+    } pacing_misses[5] = {};
     uint32_t pacing_misses_logged = 0;
+
+    uint64_t wall_samples[128] = {};
+    uint32_t wall_sample_count = 0;
+    uint64_t prev_wall = 0;
+    uint32_t judder_pairs = 0;
+    uint32_t frame_drop_18ms = 0;
+    uint64_t max_acq = 0, max_fence = 0, max_back = 0, max_gpu_ns = 0;
 
     // Hardware GPU timestamp counters
     uint64_t gpu_cat_ns[GPU_CAT_COUNT] = {};
@@ -854,11 +862,11 @@ static uint32_t lookupOrUploadSingleTexture(
     const bool dxt5 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_DXT5);
     const bool any_bc = (dxt1 || dxt3 || dxt5);
     // Deko3D CopyBufferToImage corrupts/drops blocks on narrow/short BCn textures
-    // (width < 128 or height < 64, e.g. 128x32 DXT3); decode them (and mipmapped /
-    // >=64x64 pow2 stage textures) on CPU to BGRA8 so they upload cleanly with full mipmaps.
-    const bool want_mips = !desc.linear && isPow2U32(desc.width) && isPow2U32(desc.height) &&
-        (desc.mip_levels > 1u || (desc.width >= 64u && desc.height >= 64u));
-    const bool small_bc_cpu = any_bc && (desc.width < 128u || desc.height < 64u || want_mips);
+    // (width < 128, or <=128x<64 such as 128x32); decode those on CPU to BGRA8.
+    // Keep wide BCn textures (e.g. 512x8, 512x512) on hardware BCn without GPU mipgen
+    // to prevent sky/stage stripe artifacts.
+    const bool want_mips = false;
+    const bool small_bc_cpu = any_bc && (desc.width < 128u || (desc.width <= 128u && desc.height < 64u));
     const bool compressed = (any_bc && !small_bc_cpu);
 
     uint64_t t_tex_start = perfNow();
@@ -950,6 +958,9 @@ static uint32_t lookupOrUploadSingleTexture(
         dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
         p->tex_uploads_in_frame++;
+        printf("[TexMeta] slot=%u COMP fmt=0x%x %ux%u lin=%u mips=%u/%u bc_cpu=0 bytes=%u\n",
+               ct.desc_slot, fmt, desc.width, desc.height, desc.linear ? 1u : 0u,
+               desc.mip_levels, 1u, upload_size);
         return ct.desc_slot;
     }
 
@@ -1161,6 +1172,9 @@ static uint32_t lookupOrUploadSingleTexture(
     dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
     p->tex_uploads_in_frame++;
+    printf("[TexMeta] slot=%u BGRA fmt=0x%x %ux%u lin=%u mips=%u/%u bc_cpu=%u bytes=%u\n",
+           ct.desc_slot, fmt, desc.width, desc.height, desc.linear ? 1u : 0u,
+           desc.mip_levels, mips, small_bc_cpu ? 1u : 0u, upload_size);
     {
         uint64_t t_tex_end = perfNow();
         double total_ms = perfMs(t_tex_end - t_tex_start);
@@ -1793,11 +1807,13 @@ static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
         // Harvest GPU hardware timestamps from previous frame using this slot
         uint32_t count = p->query_count[slot];
         if (count > 1) {
+            uint64_t frame_gpu_ns = 0;
             for (uint32_t q = 0; q < count - 1; ++q) {
                 uint64_t t0 = p->queries_cpu[slot][q].timestamp;
                 uint64_t t1 = p->queries_cpu[slot][q + 1].timestamp;
                 if (t1 >= t0) {
                     uint64_t dt_ns = dkTimestampToNs(t1 - t0);
+                    frame_gpu_ns += dt_ns;
                     uint16_t cat = p->query_cats[slot][q];
                     if (cat < GPU_CAT_COUNT) {
                         g_perf.gpu_cat_ns[cat] += dt_ns;
@@ -1846,6 +1862,7 @@ static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
                     }
                 }
             }
+            if (frame_gpu_ns > g_perf.max_gpu_ns) g_perf.max_gpu_ns = frame_gpu_ns;
             g_perf.gpu_profiled_frames++;
         }
         p->query_count[slot] = 0;
@@ -2121,6 +2138,14 @@ RecompD3dPresenterError d3d_backend_submit(
     pumpAudioIfDue();
 
     if (command->type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR) {
+        if (presenter->frame_counter == g_sdiag.dump_target_frame && g_sdiag.dump_target_frame != 0u) {
+            printf("[ClearDump] f=%u off=%u cc=%u(0x%08x) cd=%u(%.3f) cs=%u(%u)\n",
+                   presenter->frame_counter,
+                   command->data.clear.target.offscreen ? 1u : 0u,
+                   command->data.clear.clear_color ? 1u : 0u, command->data.clear.color,
+                   command->data.clear.clear_depth ? 1u : 0u, command->data.clear.z,
+                   command->data.clear.clear_stencil ? 1u : 0u, command->data.clear.stencil);
+        }
         if (command->data.clear.target.offscreen) {
             return RECOMP_D3D_PRESENTER_OK;
         }
@@ -2914,6 +2939,79 @@ RecompD3dPresenterError d3d_backend_submit(
             dkCmdBufBindTextures(cmd, DkStage_Fragment, 0, tex_handles, num_textures);
         }
 
+        if (presenter->frame_counter == g_sdiag.dump_target_frame && g_sdiag.dump_target_frame != 0u &&
+            (color_mask != 0u || has_real_alpha_test)) {
+            const char *fsh_tag = (chosen_fsh == &presenter->fsh_null) ? "null"
+                                : (chosen_fsh == &presenter->fsh_null_alpha) ? "null_alpha"
+                                : (chosen_fsh == &presenter->fsh_color) ? "color"
+                                : (chosen_fsh == &presenter->fsh_tex) ? "tex"
+                                : (chosen_fsh == &presenter->fsh_ff_mod2x) ? "ff_mod2x"
+                                : (chosen_fsh == &presenter->fsh_comb_fast) ? "comb_fast"
+                                : (chosen_fsh == &presenter->fsh_comb2) ? "comb2" : "gen";
+            float min_x = 0.0f, min_y = 0.0f, max_x = 0.0f, max_y = 0.0f, min_z = 0.0f, max_z = 0.0f;
+            float u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
+            uint32_t c0 = 0u;
+            if (draw.vertex_bytes && draw.vertex_count > 0 && stride >= 12u) {
+                const uint8_t *vb = (const uint8_t *)draw.vertex_bytes;
+                std::memcpy(&min_x, vb + 0, 4); max_x = min_x;
+                std::memcpy(&min_y, vb + 4, 4); max_y = min_y;
+                std::memcpy(&min_z, vb + 8, 4); max_z = min_z;
+                uint32_t v_scan = draw.vertex_count < 4096u ? draw.vertex_count : 4096u;
+                for (uint32_t vi = 1u; vi < v_scan; ++vi) {
+                    float vx = 0.0f, vy = 0.0f, vz = 0.0f;
+                    std::memcpy(&vx, vb + (size_t)vi * stride + 0, 4);
+                    std::memcpy(&vy, vb + (size_t)vi * stride + 4, 4);
+                    std::memcpy(&vz, vb + (size_t)vi * stride + 8, 4);
+                    if (vx < min_x) min_x = vx; if (vx > max_x) max_x = vx;
+                    if (vy < min_y) min_y = vy; if (vy > max_y) max_y = vy;
+                    if (vz < min_z) min_z = vz; if (vz > max_z) max_z = vz;
+                }
+                if (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT && layout.diffuse_offset + 4u <= stride) {
+                    std::memcpy(&c0, vb + layout.diffuse_offset, 4);
+                }
+                if (layout.texcoord_count > 0 && layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT &&
+                    layout.texcoord_offset + 8 <= stride) {
+                    std::memcpy(&u0, vb + layout.texcoord_offset, 4);
+                    std::memcpy(&v0, vb + layout.texcoord_offset + 4, 4);
+                }
+                if (draw.vertex_count > 1) {
+                    const uint8_t *vb_last = vb + (size_t)(draw.vertex_count - 1u) * stride;
+                    if (layout.texcoord_count > 0 && layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT &&
+                        layout.texcoord_offset + 8 <= stride) {
+                        std::memcpy(&u1, vb_last + layout.texcoord_offset, 4);
+                        std::memcpy(&v1, vb_last + layout.texcoord_offset + 4, 4);
+                    }
+                }
+            }
+            printf("[DrawDump] f=%u d=%u fsh=%s vsh=%s pre=%u prog=%u prim=%u v=%u i=%u cm=0x%x "
+                   "op0=(%u,%u,%u) c0=0x%08x "
+                   "t0=(has=%u,fmt=0x%x,%ux%u,lin=%u,m=%u,au=%u,av=%u) "
+                   "t1=(st=%u,fmt=0x%x,%ux%u,tm=0x%x) "
+                   "at=(%u,%u,%u) bl=(%u,%u,%u,%u) z=(%u,%u,%u) cull=%u "
+                   "vp=(%.0f,%.0f,%.0f,%.0f) sc=(%u,%u,%u,%u) fog=%u "
+                   "box=(%.1f,%.1f)-(%.1f,%.1f) zr=(%.2f..%.2f) uv=(%.3f,%.3f)->(%.3f,%.3f)\n",
+                   presenter->frame_counter, presenter->draws_in_frame, fsh_tag,
+                   use_gpu_vtx ? "ff" : "cpu",
+                   layout.pretransformed ? 1u : 0u, draw.program_count, (uint32_t)draw.primitive_type,
+                   draw.vertex_count, draw.index_count, color_mask,
+                   (uint32_t)pp.stages[0].color_op, (uint32_t)pp.stages[0].alpha_op, pp.stages[0].alpha_kill ? 1u : 0u,
+                   c0,
+                   draw.has_texture ? 1u : 0u, (uint32_t)draw.texture.format_byte,
+                   draw.texture.width, draw.texture.height, draw.texture.linear ? 1u : 0u,
+                   draw.texture.mip_levels, (uint32_t)draw.address_u, (uint32_t)draw.address_v,
+                   (uint32_t)pp.stage_count, (uint32_t)draw.stage_textures[1].desc.format_byte,
+                   draw.stage_textures[1].desc.width, draw.stage_textures[1].desc.height,
+                   pp.combiners.texture_modes,
+                   draw.depth.alpha_test_enable ? 1u : 0u, alpha_func, (uint32_t)draw.depth.alpha_ref,
+                   draw.blend.blend_enable ? 1u : 0u, (uint32_t)draw.blend.op,
+                   (uint32_t)draw.blend.src_factor, (uint32_t)draw.blend.dst_factor,
+                   draw.depth.depth_test_enable ? 1u : 0u, draw.depth.depth_write_enable ? 1u : 0u,
+                   (uint32_t)draw.depth.depth_func, (uint32_t)draw.cull_mode,
+                   viewport.x, viewport.y, viewport.width, viewport.height,
+                   scissor.x, scissor.y, scissor.width, scissor.height,
+                   has_fog ? 1u : 0u,
+                   min_x, min_y, max_x, max_y, min_z, max_z, u0, v0, u1, v1);
+        }
         // 6. Bind Pipeline State (Rasterizer, Depth/Stencil, Blend)
         DkRasterizerState rasterizerState;
         dkRasterizerStateDefaults(&rasterizerState);
@@ -3249,6 +3347,19 @@ RecompD3dPresenterError d3d_backend_submit(
                 uint64_t wall = now - g_perf.last_present;
                 g_perf.wall_sum += wall;
                 if (wall > g_perf.wall_max) g_perf.wall_max = wall;
+                if (d_acq > g_perf.max_acq) g_perf.max_acq = d_acq;
+                if (d_fence > g_perf.max_fence) g_perf.max_fence = d_fence;
+                if (d_back > g_perf.max_back) g_perf.max_back = d_back;
+                if (g_perf.wall_sample_count < 128u) {
+                    g_perf.wall_samples[g_perf.wall_sample_count++] = wall;
+                }
+                if (wall > 345600ULL) ++g_perf.frame_drop_18ms; // >18.0ms
+                if (g_perf.prev_wall > 0 &&
+                    ((g_perf.prev_wall > 384000ULL && wall < 259200ULL) ||
+                     (g_perf.prev_wall < 259200ULL && wall > 384000ULL))) {
+                    ++g_perf.judder_pairs;
+                }
+                g_perf.prev_wall = wall;
                 if (wall > 20u * 19200u) ++g_perf.slow_frames;
                 if (wall <= 325440ULL) ++g_perf.hist_16_95;
                 if (wall <= 321600ULL) ++g_perf.hist_16_75;
@@ -3256,16 +3367,31 @@ RecompD3dPresenterError d3d_backend_submit(
                 else if (wall <= 641280ULL) ++g_perf.hist_33;
                 else if (wall <= 960000ULL) ++g_perf.hist_50;
                 else ++g_perf.hist_gt50;
-                if (wall > 325440ULL && presenter->draws_in_frame >= 100u && g_perf.pacing_misses_logged < 3u) {
-                    auto& pm = g_perf.pacing_misses[g_perf.pacing_misses_logged++];
-                    pm.frame = presenter->frame_counter;
-                    pm.wall_ms = perfMs(wall);
-                    pm.back_ms = perfMs(d_back);
-                    pm.draw_ms = perfMs(d_draw);
-                    pm.vtx_ms = perfMs(d_vtx);
-                    pm.acq_ms = perfMs(d_acq);
-                    pm.fence_ms = perfMs(d_fence);
-                    pm.pres_ms = perfMs(d_pres);
+                if (wall > 345600ULL && presenter->draws_in_frame >= 50u) {
+                    double wms = perfMs(wall);
+                    int slot_idx = -1;
+                    if (g_perf.pacing_misses_logged < 5u) {
+                        slot_idx = (int)g_perf.pacing_misses_logged++;
+                    } else {
+                        int min_i = 0;
+                        for (int k = 1; k < 5; ++k) {
+                            if (g_perf.pacing_misses[k].wall_ms < g_perf.pacing_misses[min_i].wall_ms) min_i = k;
+                        }
+                        if (wms > g_perf.pacing_misses[min_i].wall_ms) slot_idx = min_i;
+                    }
+                    if (slot_idx >= 0) {
+                        auto& pm = g_perf.pacing_misses[slot_idx];
+                        pm.frame = presenter->frame_counter;
+                        pm.wall_ms = wms;
+                        pm.back_ms = perfMs(d_back);
+                        pm.draw_ms = perfMs(d_draw);
+                        pm.vtx_ms = perfMs(d_vtx);
+                        pm.acq_ms = perfMs(d_acq);
+                        pm.fence_ms = perfMs(d_fence);
+                        pm.pres_ms = perfMs(d_pres);
+                        pm.draws = presenter->draws_in_frame;
+                        pm.tex_up = presenter->tex_uploads_in_frame;
+                    }
                 }
                 if (wall > 384000ULL && presenter->draws_in_frame >= 100u &&
                     g_perf.hitches_logged < 5u && s_total_pres_hitches < 50u) {
@@ -3334,12 +3460,20 @@ RecompD3dPresenterError d3d_backend_submit(
             uint32_t prev_sub = g_sdiag.prev_sub_scissor_draws;
             uint32_t prev_miny = g_sdiag.prev_min_y;
             uint32_t prev_maxy = g_sdiag.prev_max_y;
+            static uint32_t s_draw_dumps_done = 0u;
+            static uint32_t s_last_dump_frame = 0u;
             uint32_t next_dump = 0u;
+            if (s_draw_dumps_done < 3u && presenter->draws_in_frame >= 450u &&
+                presenter->frame_counter >= s_last_dump_frame + 240u) {
+                next_dump = presenter->frame_counter + 1u;
+                s_last_dump_frame = presenter->frame_counter;
+                ++s_draw_dumps_done;
+            }
             g_sdiag = StageDiagCounters{};
             g_sdiag.prev_sub_scissor_draws = prev_sub;
             g_sdiag.prev_min_y = prev_miny;
             g_sdiag.prev_max_y = prev_maxy;
-            g_sdiag.dump_target_frame = next_dump;
+            if (next_dump != 0u) g_sdiag.dump_target_frame = next_dump;
             if (g_perf.frames > 1) {
                 double n = (double)g_perf.frames;
                 double wall_avg = perfMs(g_perf.wall_sum) / (n - 1.0);
@@ -3354,11 +3488,25 @@ RecompD3dPresenterError d3d_backend_submit(
                 printf("[Perf] frame_hist: <=16.75ms=%u <=16.95ms(59+fps)=%u(%.1f%%) 16.75-20ms=%u 20-33.4ms=%u 33.4-50ms=%u >50ms=%u\n",
                        g_perf.hist_16_75, g_perf.hist_16_95, pct_59,
                        g_perf.hist_20, g_perf.hist_33, g_perf.hist_50, g_perf.hist_gt50);
+                if (g_perf.wall_sample_count > 0u) {
+                    std::sort(g_perf.wall_samples, g_perf.wall_samples + g_perf.wall_sample_count);
+                    uint32_t scnt = g_perf.wall_sample_count;
+                    double wmin = perfMs(g_perf.wall_samples[0]);
+                    double wp50 = perfMs(g_perf.wall_samples[scnt / 2u]);
+                    double wp95 = perfMs(g_perf.wall_samples[(scnt * 95u) / 100u]);
+                    double wp99 = perfMs(g_perf.wall_samples[(scnt * 99u) / 100u]);
+                    double wmax = perfMs(g_perf.wall_samples[scnt - 1u]);
+                    printf("[FramePacing] min=%.2fms p50=%.2fms p95=%.2fms p99=%.2fms max=%.2fms | >18ms=%u judder_pairs=%u | max(back=%.2fms acq=%.2fms fence=%.2fms gpu=%.2fms)\n",
+                           wmin, wp50, wp95, wp99, wmax,
+                           g_perf.frame_drop_18ms, g_perf.judder_pairs,
+                           perfMs(g_perf.max_back), perfMs(g_perf.max_acq), perfMs(g_perf.max_fence),
+                           (double)g_perf.max_gpu_ns / 1000000.0);
+                }
                 for (uint32_t mi = 0; mi < g_perf.pacing_misses_logged; ++mi) {
                     const auto& pm = g_perf.pacing_misses[mi];
-                    printf("[PacingMiss] f=%u wall=%.2fms back=%.2fms (draw=%.2f vtx=%.2f acq=%.2f fence=%.2f pres=%.2f)\n",
+                    printf("[PacingMiss] f=%u wall=%.2fms back=%.2fms (draw=%.2f vtx=%.2f acq=%.2f fence=%.2f pres=%.2f) draws=%u tex_up=%u\n",
                            pm.frame, pm.wall_ms, pm.back_ms, pm.draw_ms, pm.vtx_ms,
-                           pm.acq_ms, pm.fence_ms, pm.pres_ms);
+                           pm.acq_ms, pm.fence_ms, pm.pres_ms, pm.draws, pm.tex_up);
                 }
                 g_perf.pacing_misses_logged = 0;
                 for (uint32_t hi = 0; hi < g_perf.hitches_logged; ++hi) {
