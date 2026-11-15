@@ -853,8 +853,11 @@ static uint32_t lookupOrUploadSingleTexture(
     const bool dxt5 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_DXT5);
     const bool any_bc = (dxt1 || dxt3 || dxt5);
     // Deko3D CopyBufferToImage corrupts/drops blocks on narrow BCn textures (width < 128);
-    // decode them on CPU to BGRA8 so they upload via the linear BGRA8 path.
-    const bool small_bc_cpu = any_bc && (desc.width < 128u);
+    // decode them (and mipmapped / >=64x64 pow2 stage textures) on CPU to BGRA8 so they upload
+    // via the linear BGRA8 path and get full GPU-generated mipmaps.
+    const bool want_mips = !desc.linear && isPow2U32(desc.width) && isPow2U32(desc.height) &&
+        (desc.mip_levels > 1u || (desc.width >= 64u && desc.height >= 64u));
+    const bool small_bc_cpu = any_bc && (desc.width < 128u || want_mips);
     const bool compressed = (any_bc && !small_bc_cpu);
 
     uint64_t t_tex_start = perfNow();
@@ -1076,12 +1079,26 @@ static uint32_t lookupOrUploadSingleTexture(
     uint64_t t_tex_decode_end = perfNow();
     p->dyn_offset += (upload_size + 255u) & ~255u;
 
+    uint32_t max_mips = 1u;
+    {
+        uint32_t mw = desc.width, mh = desc.height;
+        while (mw > 1u || mh > 1u) {
+            mw = mw > 1u ? (mw >> 1u) : 1u;
+            mh = mh > 1u ? (mh >> 1u) : 1u;
+            ++max_mips;
+        }
+    }
+    const uint32_t mips = want_mips
+        ? (desc.mip_levels > 1u ? std::min<uint32_t>(desc.mip_levels, max_mips) : max_mips)
+        : 1u;
+
     DkImageLayoutMaker lm;
     dkImageLayoutMakerDefaults(&lm, p->device);
     lm.flags = DkImageFlags_Usage2DEngine;
     lm.format = DkImageFormat_BGRA8_Unorm;
     lm.dimensions[0] = desc.width;
     lm.dimensions[1] = desc.height;
+    lm.mipLevels = mips;
 
     DkImageLayout layout;
     dkImageLayoutInitialize(&layout, &lm);
@@ -1120,6 +1137,26 @@ static uint32_t lookupOrUploadSingleTexture(
     DkCopyBuf copySrc = { dyn_gpu + stage_offset, desc.width * 4u, desc.height };
     DkImageRect copyRect = { 0, 0, 0, desc.width, desc.height, 1 };
     dkCmdBufCopyBufferToImage(cmd, &copySrc, &ct.view, &copyRect, 0);
+    if (mips > 1u) {
+        uint32_t sw = desc.width, sh = desc.height;
+        for (uint32_t m = 1u; m < mips; ++m) {
+            uint32_t dw = sw > 1u ? (sw >> 1u) : 1u;
+            uint32_t dh = sh > 1u ? (sh >> 1u) : 1u;
+            DkImageView srcView, dstView;
+            dkImageViewDefaults(&srcView, &ct.image);
+            srcView.mipLevelOffset = (uint8_t)(m - 1u);
+            srcView.mipLevelCount = 1u;
+            dkImageViewDefaults(&dstView, &ct.image);
+            dstView.mipLevelOffset = (uint8_t)m;
+            dstView.mipLevelCount = 1u;
+            DkImageRect srcRect = { 0, 0, 0, sw, sh, 1 };
+            DkImageRect dstRect = { 0, 0, 0, dw, dh, 1 };
+            dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+            dkCmdBufBlitImage(cmd, &srcView, &srcRect, &dstView, &dstRect, DkBlitFlag_FilterLinear, 0);
+            sw = dw;
+            sh = dh;
+        }
+    }
     dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
     p->tex_uploads_in_frame++;
@@ -1653,7 +1690,8 @@ RecompD3dPresenterError d3d_backend_create(
         dkSamplerDefaults(&smp);
         smp.minFilter = DkFilter_Linear;
         smp.magFilter = DkFilter_Linear;
-        smp.mipFilter = DkMipFilter_None;
+        smp.mipFilter = DkMipFilter_Linear;
+        smp.maxAnisotropy = 4.0f;
         auto mapWrap = [](uint32_t code) -> DkWrapMode {
             if (code == 1u) return DkWrapMode_ClampToEdge;
             if (code == 2u) return DkWrapMode_MirroredRepeat;
