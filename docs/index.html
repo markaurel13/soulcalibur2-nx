@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -121,29 +121,29 @@
     <header>
       <img src="https://raw.githubusercontent.com/markaurel13/soulcalibur2-nx/switch-port/switch/assets/icon.jpg" alt="Soulcalibur II NX" />
       <h1>Soulcalibur II NX — Web Installer</h1>
-      <p class="subtitle">Prepara tu tarjeta microSD de Nintendo Switch 100% en tu navegador, sin alojar archivos con copyright.</p>
+      <p class="subtitle">Prepare your Nintendo Switch microSD card 100% locally in your browser—no copyrighted files hosted.</p>
     </header>
 
     <section class="card">
-      <h2>1. Disco Base — Xbox NTSC-U (Obligatorio)</h2>
-      <p>Arrastra tu <strong>ISO de Xbox (.iso / .xiso)</strong> de Soulcalibur II, o directamente los archivos extraídos (<code>Default.xbe</code>, <code>root.olk</code>, <code>movie.afs</code>, <code>bgm.afs</code>). <em>Opcional: también puedes soltar aquí tu <code>soulcalibur2.nro</code> si quieres copiarlo todo junto.</em></p>
+      <h2>1. Base Disc — Xbox NTSC-U (Required)</h2>
+      <p>Drag &amp; drop your Soulcalibur II <strong>Xbox ISO (.iso / .xiso)</strong>, or the extracted files directly (<code>Default.xbe</code>, <code>root.olk</code>, <code>movie.afs</code>, <code>bgm.afs</code>). <em>Optional: you can also drop <code>soulcalibur2.nro</code> here to copy it alongside your game files.</em></p>
       <div class="dropzone" id="drop-xbox">
         <input type="file" id="file-xbox" multiple accept=".iso,.xiso,.xbe,.olk,.afs,.nro" />
-        <strong>Haz clic o arrastra tu ISO de Xbox aquí</strong><br />
-        <span style="color: var(--muted); font-size: 0.85rem;">Lectura directa por streaming (no carga la ISO entera en RAM)</span>
+        <strong>Click or drag &amp; drop your Xbox ISO here</strong><br />
+        <span style="color: var(--muted); font-size: 0.85rem;">Streaming read (does not load the full ISO into RAM)</span>
       </div>
       <div class="pills" id="xbox-status"></div>
     </section>
 
     <section class="card">
-      <h2>2. Personajes Invitados — Link &amp; Heihachi (Opcional)</h2>
-      <p>Si quieres desbloquear a <strong>Link</strong> y/o <strong>Heihachi</strong> junto a Spawn, arrastra tus ISOs legales de GameCube y/o PS2 (NTSC-U). Se generará <code>guests.olk</code> directamente en tu navegador.</p>
+      <h2>2. Guest Fighters — Link &amp; Heihachi (Optional)</h2>
+      <p>To unlock <strong>Link</strong> and/or <strong>Heihachi</strong> alongside Spawn, drop your legal GameCube and/or PS2 (NTSC-U) ISOs. <code>guests.olk</code> will be built directly in your browser.</p>
       <div class="grid-2">
         <div>
           <div class="dropzone" id="drop-gc">
             <input type="file" id="file-gc" multiple accept=".iso,.gcm,.olk,.dol" />
             <strong>GameCube ISO (Link)</strong><br />
-            <span style="color: var(--muted); font-size: 0.82rem;">.iso / .gcm o root.olk + boot.dol</span>
+            <span style="color: var(--muted); font-size: 0.82rem;">.iso / .gcm or root.olk + boot.dol</span>
           </div>
           <div class="pills" id="gc-status"></div>
         </div>
@@ -151,7 +151,7 @@
           <div class="dropzone" id="drop-ps2">
             <input type="file" id="file-ps2" multiple accept=".iso,.olk,.43" />
             <strong>PS2 ISO (Heihachi)</strong><br />
-            <span style="color: var(--muted); font-size: 0.82rem;">.iso o ROOT.OLK + SLUS_206.43</span>
+            <span style="color: var(--muted); font-size: 0.82rem;">.iso or ROOT.OLK + SLUS_206.43</span>
           </div>
           <div class="pills" id="ps2-status"></div>
         </div>
@@ -159,11 +159,11 @@
     </section>
 
     <section class="card">
-      <h2>3. Instalar en Nintendo Switch</h2>
-      <p>Selecciona la raíz de tu tarjeta microSD (o una carpeta temporal) para copiar todo listo dentro de <code>switch/soulcalibur2/</code>.</p>
+      <h2>3. Install to Nintendo Switch</h2>
+      <p>Select your microSD card root (or a temporary folder) to copy everything ready into <code>switch/soulcalibur2/</code>.</p>
       <div class="actions">
-        <button id="btn-export-sd" class="btn btn-primary" disabled>⚡ Elegir carpeta / microSD e Instalar</button>
-        <button id="btn-download-list" class="btn btn-secondary" disabled>⬇ Generar descargas individuales</button>
+        <button id="btn-export-sd" class="btn btn-primary" disabled>⚡ Select Folder / microSD &amp; Install</button>
+        <button id="btn-download-list" class="btn btn-secondary" disabled>⬇ Generate Individual Downloads</button>
       </div>
       <div id="progress-wrap" hidden>
         <div class="progress-outer"><div id="progress-bar" class="progress-inner"></div></div>
@@ -173,12 +173,12 @@
     </section>
 
     <section class="card">
-      <h2>Registro</h2>
+      <h2>Log</h2>
       <div id="log-output" class="log-box"></div>
     </section>
 
     <footer>
-      Soulcalibur II NX no aloja ni distribuye ROMs, ISOs ni archivos con copyright. Todo el procesamiento ocurre localmente en tu navegador.
+      Soulcalibur II NX does not host or distribute copyrighted ROMs, ISOs, or game assets. All processing happens locally in your browser.
     </footer>
   </div>
 

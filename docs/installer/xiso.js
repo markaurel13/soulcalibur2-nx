@@ -45,7 +45,7 @@ export const DiscParsers = (() => {
 
     if (baseOffset < 0) {
       throw new Error(
-        "No se encontró cabecera XISO válida ('MICROSOFT*XBOX*MEDIA'). Asegúrate de usar una ISO de Xbox (NTSC-U)."
+        "Valid XISO header ('MICROSOFT*XBOX*MEDIA') not found. Make sure you are using an Xbox (NTSC-U) ISO."
       );
     }
 
@@ -95,12 +95,12 @@ export const DiscParsers = (() => {
   async function parseGameCubeIso(file) {
     const hdrBuf = await readSlice(file, 0, 0x440);
     if (hdrBuf.byteLength < 0x440) {
-      throw new Error("El archivo es demasiado pequeño para ser una ISO de GameCube.");
+      throw new Error("File is too small to be a valid GameCube ISO.");
     }
     const dv = new DataView(hdrBuf);
     const magic = dv.getUint32(0x1c, false);
     if (magic !== 0xc2339f3d) {
-      throw new Error("Cabecera de GameCube inválida (magic != 0xC2339F3D).");
+      throw new Error("Invalid GameCube header (magic != 0xC2339F3D).");
     }
 
     const dolOffset = dv.getUint32(0x420, false);
@@ -149,12 +149,12 @@ export const DiscParsers = (() => {
   async function parsePs2Iso(file) {
     const pvdBuf = await readSlice(file, 16 * SECTOR_SIZE, SECTOR_SIZE);
     if (pvdBuf.byteLength < SECTOR_SIZE) {
-      throw new Error("El archivo es demasiado pequeño para ser una ISO de PS2.");
+      throw new Error("File is too small to be a valid PS2 ISO.");
     }
     const pvdU8 = new Uint8Array(pvdBuf);
     const pvdDv = new DataView(pvdBuf);
     if (pvdU8[0] !== 1 || decodeAscii(pvdU8.subarray(1, 6)) !== "CD001") {
-      throw new Error("Cabecera ISO9660 inválida (no se encontró PVD 'CD001').");
+      throw new Error("Invalid ISO9660 header (PVD 'CD001' not found).");
     }
 
     const rootExtent = pvdDv.getUint32(156 + 2, true);

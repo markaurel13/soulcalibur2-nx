@@ -88,19 +88,19 @@ function updateUI() {
     .join("");
 
   $("gc-status").innerHTML = readyGc
-    ? `<span class="pill ok">✓ Link listo (${formatBytes(state.gc["root.olk"].blob.size)})</span>`
-    : `<span class="pill muted">Opcional: ISO de GameCube para Link</span>`;
+    ? `<span class="pill ok">✓ Link ready (${formatBytes(state.gc["root.olk"].blob.size)})</span>`
+    : `<span class="pill muted">Optional: GameCube ISO for Link</span>`;
 
   $("ps2-status").innerHTML = readyPs2
-    ? `<span class="pill ok">✓ Heihachi listo (${formatBytes(state.ps2["root.olk"].blob.size)})</span>`
-    : `<span class="pill muted">Opcional: ISO de PS2 para Heihachi</span>`;
+    ? `<span class="pill ok">✓ Heihachi ready (${formatBytes(state.ps2["root.olk"].blob.size)})</span>`
+    : `<span class="pill muted">Optional: PS2 ISO for Heihachi</span>`;
 
   const canBuild = readyXbox;
   $("btn-export-sd").disabled = !canBuild;
   $("btn-download-list").disabled = !canBuild;
 
   if (!window.showDirectoryPicker) {
-    $("btn-export-sd").title = "Tu navegador no soporta escritura directa a carpeta; usa Chrome/Edge/Brave o la descarga individual.";
+    $("btn-export-sd").title = "Your browser does not support direct folder writing; use Chrome/Edge/Brave or Individual Downloads.";
   }
 }
 
@@ -109,7 +109,7 @@ async function handleXboxInput(fileList) {
   for (const file of fileList) {
     const low = file.name.toLowerCase();
     if (low.endsWith(".iso") || low.endsWith(".xiso")) {
-      log(`Leyendo estructura XISO de '${file.name}' (${formatBytes(file.size)})...`);
+      log(`Reading XISO structure of '${file.name}' (${formatBytes(file.size)})...`);
       try {
         const entries = await DiscParsers.parseXboxIso(file);
         const mapping = {
@@ -130,12 +130,12 @@ async function handleXboxInput(fileList) {
           }
         }
         if (foundCount === 0) {
-          log("No se encontraron Default.xbe / root.olk / movie.afs / bgm.afs dentro de la ISO.", "error");
+          log("Default.xbe / root.olk / movie.afs / bgm.afs were not found inside the ISO.", "error");
         } else {
-          log(`ISO de Xbox analizada: ${foundCount}/4 archivos listos (sin copiar a RAM).`, "ok");
+          log(`Xbox ISO parsed: ${foundCount}/4 files ready (streaming, zero RAM copy).`, "ok");
         }
       } catch (err) {
-        log(`Error al leer ISO de Xbox: ${err.message}`, "error");
+        log(`Failed to read Xbox ISO: ${err.message}`, "error");
       }
     } else if (low === "default.xbe" || low === "root.olk" || low === "movie.afs" || low === "bgm.afs") {
       const canonical = {
@@ -145,25 +145,25 @@ async function handleXboxInput(fileList) {
         "bgm.afs": "bgm.afs",
       }[low];
       state.xbox[low] = { name: canonical, blob: file };
-      log(`Cargado archivo individual: ${canonical} (${formatBytes(file.size)})`, "ok");
+      log(`Loaded file: ${canonical} (${formatBytes(file.size)})`, "ok");
     } else if (low.endsWith(".nro")) {
       state.nroBlob = { name: file.name, blob: file };
-      log(`NRO local cargado: ${file.name} (${formatBytes(file.size)})`, "ok");
+      log(`Loaded local NRO: ${file.name} (${formatBytes(file.size)})`, "ok");
     }
   }
   updateUI();
 }
 
-// ---- 3. Handle GameCube / PS2 Discs ----
+// ---- 2. Handle GameCube / PS2 Discs ----
 async function handleGameCubeInput(fileList) {
   for (const file of fileList) {
     const low = file.name.toLowerCase();
     if (low.endsWith(".iso") || low.endsWith(".gcm")) {
-      log(`Leyendo ISO de GameCube '${file.name}'...`);
+      log(`Reading GameCube ISO '${file.name}'...`);
       try {
         const entries = await DiscParsers.parseGameCubeIso(file);
         if (!entries["root.olk"] || !entries["boot.dol"]) {
-          throw new Error("Faltan root.olk o boot.dol en la ISO de GameCube.");
+          throw new Error("Missing root.olk or boot.dol in the GameCube ISO.");
         }
         state.gc["root.olk"] = {
           name: "root.olk",
@@ -173,13 +173,13 @@ async function handleGameCubeInput(fileList) {
           name: "boot.dol",
           blob: file.slice(entries["boot.dol"].offset, entries["boot.dol"].offset + entries["boot.dol"].size),
         };
-        log("ISO de GameCube lista para extraer a Link.", "ok");
+        log("GameCube ISO ready to extract Link.", "ok");
       } catch (err) {
-        log(`Error al leer ISO de GameCube: ${err.message}`, "error");
+        log(`Failed to read GameCube ISO: ${err.message}`, "error");
       }
     } else if (low === "root.olk" || low === "boot.dol") {
       state.gc[low] = { name: low, blob: file };
-      log(`GameCube: cargado ${low} (${formatBytes(file.size)})`, "ok");
+      log(`GameCube: loaded ${low} (${formatBytes(file.size)})`, "ok");
     }
   }
   updateUI();
@@ -189,11 +189,11 @@ async function handlePs2Input(fileList) {
   for (const file of fileList) {
     const low = file.name.toLowerCase();
     if (low.endsWith(".iso")) {
-      log(`Leyendo ISO de PS2 '${file.name}'...`);
+      log(`Reading PS2 ISO '${file.name}'...`);
       try {
         const entries = await DiscParsers.parsePs2Iso(file);
         if (!entries["root.olk"] || !entries["slus_206.43"]) {
-          throw new Error("Faltan ROOT.OLK o SLUS_206.43 en la ISO de PS2 (asegúrate de usar Soulcalibur II USA).");
+          throw new Error("Missing ROOT.OLK or SLUS_206.43 in the PS2 ISO (make sure to use Soulcalibur II USA).");
         }
         state.ps2["root.olk"] = {
           name: "root.olk",
@@ -203,13 +203,13 @@ async function handlePs2Input(fileList) {
           name: "SLUS_206.43",
           blob: file.slice(entries["slus_206.43"].offset, entries["slus_206.43"].offset + entries["slus_206.43"].size),
         };
-        log("ISO de PS2 lista para extraer a Heihachi.", "ok");
+        log("PS2 ISO ready to extract Heihachi.", "ok");
       } catch (err) {
-        log(`Error al leer ISO de PS2: ${err.message}`, "error");
+        log(`Failed to read PS2 ISO: ${err.message}`, "error");
       }
     } else if (low === "root.olk" || low === "slus_206.43") {
       state.ps2[low] = { name: file.name, blob: file };
-      log(`PS2: cargado ${file.name} (${formatBytes(file.size)})`, "ok");
+      log(`PS2: loaded ${file.name} (${formatBytes(file.size)})`, "ok");
     }
   }
   updateUI();
@@ -227,7 +227,7 @@ async function fetchGuestScript(filename) {
       // try next
     }
   }
-  throw new Error(`No se pudo descargar el script tools/guests/${filename}`);
+  throw new Error(`Could not fetch script tools/guests/${filename}`);
 }
 
 async function buildGuestsIfNeeded() {
@@ -236,8 +236,8 @@ async function buildGuestsIfNeeded() {
   if (!hasGc && !hasPs2) return null;
   if (state.guestsBlob) return state.guestsBlob;
 
-  setProgress(10, "Cargando motor Python (Pyodide) para Link / Heihachi...");
-  log("Inicializando Pyodide en el navegador para generar guests.olk...");
+  setProgress(10, "Loading Python runtime (Pyodide) for Link / Heihachi...");
+  log("Initializing Pyodide in browser to build guests.olk...");
 
   if (!state.pyodide) {
     if (!window.loadPyodide) {
@@ -245,7 +245,7 @@ async function buildGuestsIfNeeded() {
         const s = document.createElement("script");
         s.src = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js";
         s.onload = resolve;
-        s.onerror = () => reject(new Error("No se pudo cargar Pyodide desde CDN."));
+        s.onerror = () => reject(new Error("Failed to load Pyodide from CDN."));
         document.head.appendChild(s);
       });
     }
@@ -258,13 +258,13 @@ async function buildGuestsIfNeeded() {
   py.FS.mkdirTree("/work/gc");
   py.FS.mkdirTree("/work/ps2");
 
-  setProgress(25, "Cargando scripts de conversión (tools/guests)...");
+  setProgress(25, "Loading conversion scripts (tools/guests)...");
   for (const f of GUEST_PY_FILES) {
     const code = await fetchGuestScript(f);
     py.FS.writeFile(`/work/scripts/${f}`, code);
   }
 
-  setProgress(40, "Copiando archivos de discos al entorno temporal...");
+  setProgress(40, "Staging disc files into temporary workspace...");
   py.FS.writeFile("/work/xb/root.olk", new Uint8Array(await state.xbox["root.olk"].blob.arrayBuffer()));
 
   const args = ["/work/xb/root.olk"];
@@ -280,8 +280,8 @@ async function buildGuestsIfNeeded() {
   }
   args.push("/work/guests.olk");
 
-  setProgress(60, "Construyendo guests.olk (Link / Heihachi)...");
-  log(`Ejecutando roster.py (${hasGc ? "Link " : ""}${hasPs2 ? "Heihachi" : ""})...`);
+  setProgress(60, "Building guests.olk (Link / Heihachi)...");
+  log(`Running roster.py (${hasGc ? "Link " : ""}${hasPs2 ? "Heihachi" : ""})...`);
 
   await py.runPythonAsync(`
 import sys
@@ -293,7 +293,7 @@ roster.main()
 
   const outBytes = py.FS.readFile("/work/guests.olk");
   state.guestsBlob = new Blob([outBytes], { type: "application/octet-stream" });
-  log(`guests.olk generado exitosamente (${formatBytes(state.guestsBlob.size)}).`, "ok");
+  log(`guests.olk built successfully (${formatBytes(state.guestsBlob.size)}).`, "ok");
 
   // Clean up Pyodide VFS to release RAM
   for (const p of [
@@ -333,7 +333,7 @@ async function writeBlobStreaming(dirHandle, filename, blob, onChunk) {
 
 async function exportToDirectory() {
   if (!window.showDirectoryPicker) {
-    alert("Tu navegador no soporta escritura directa a carpetas. Usa Chrome/Edge/Brave o el botón 'Descargar archivos'.");
+    alert("Your browser does not support direct folder writing. Use Chrome/Edge/Brave or 'Generate Individual Downloads'.");
     return;
   }
 
@@ -349,6 +349,8 @@ async function exportToDirectory() {
     }
     await targetDir.getDirectoryHandle("save", { create: true });
 
+    const guests = await buildGuestsIfNeeded();
+
     const queue = [
       state.xbox["default.xbe"],
       state.xbox["root.olk"],
@@ -362,19 +364,19 @@ async function exportToDirectory() {
     let writtenBytes = 0;
 
     for (const item of queue) {
-      log(`Escribiendo ${item.name} (${formatBytes(item.blob.size)}) en switch/soulcalibur2/...`);
+      log(`Writing ${item.name} (${formatBytes(item.blob.size)}) to switch/soulcalibur2/...`);
       await writeBlobStreaming(targetDir, item.name, item.blob, (chunkEnd) => {
         const pct = ((writtenBytes + chunkEnd) / totalBytes) * 100;
-        setProgress(pct, `Copiando ${item.name}... (${pct.toFixed(0)}%)`);
+        setProgress(pct, `Copying ${item.name}... (${pct.toFixed(0)}%)`);
       });
       writtenBytes += item.blob.size;
     }
 
-    setProgress(100, "¡Instalación completada en switch/soulcalibur2/!");
-    log("¡Listo! Ya puedes insertar la microSD en tu Nintendo Switch y abrir Soulcalibur II NX.", "ok");
+    setProgress(100, "Installation complete in switch/soulcalibur2/!");
+    log("Done! Insert your microSD card into your Nintendo Switch and launch Soulcalibur II NX.", "ok");
   } catch (err) {
     if (err.name !== "AbortError") {
-      log(`Error exportando archivos: ${err.message}`, "error");
+      log(`Error exporting files: ${err.message}`, "error");
     }
   }
 }
@@ -403,10 +405,10 @@ async function showManualDownloads() {
       container.appendChild(a);
     }
 
-    setProgress(100, "Archivos listos para descargar manualmente a sdmc:/switch/soulcalibur2/");
-    log("Enlaces de descarga generados.", "ok");
+    setProgress(100, "Files ready to download manually to sdmc:/switch/soulcalibur2/");
+    log("Download links generated.", "ok");
   } catch (err) {
-    log(`Error preparando descargas: ${err.message}`, "error");
+    log(`Error preparing downloads: ${err.message}`, "error");
   }
 }
 
