@@ -103,10 +103,10 @@ function updateUI() {
   if (readyXbox) {
     const xboxBytes = reqKeys.reduce((acc, k) => acc + state.xbox[k].blob.size, 0);
     const guestsBytes = state.guestsBlob ? state.guestsBlob.size : 720 * 1024 * 1024;
-    const prefix = state.guestsBlob ? "Final Switch package size" : "Estimated final Switch size";
+    const prefix = state.guestsBlob ? "Final package size" : "Estimated final size";
     hint.textContent = `${prefix}: ~${formatBytes(xboxBytes + guestsBytes)}`;
   } else {
-    hint.textContent = "Estimated final Switch size: ~2.1 GB";
+    hint.textContent = "Estimated final size: ~2.1 GB";
   }
 }
 
