@@ -2105,6 +2105,9 @@ static uint32_t s_cur_clear_color = 0u;
 static uint32_t s_lb_min_y = 0u;
 static uint32_t s_lb_max_y = 0u;
 
+static uint32_t s_clears_in_frame = 0u;
+static uint32_t s_prev_draws_in_frame = 0u;
+
 RecompD3dPresenterError d3d_backend_submit(
     RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command) {
     if (!presenter || !command) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
@@ -2120,6 +2123,7 @@ RecompD3dPresenterError d3d_backend_submit(
         if (command->data.clear.target.offscreen) {
             return RECOMP_D3D_PRESENTER_OK;
         }
+        ++s_clears_in_frame;
         if (!beginFrameIfNeeded(presenter)) {
             return RECOMP_D3D_PRESENTER_CLOSED;
         }
@@ -3140,6 +3144,7 @@ RecompD3dPresenterError d3d_backend_submit(
             // Nothing was cleared or drawn this frame (e.g. skipped logos / waiting for scene load).
             // Do not flip swapchain with an uninitialized or blank buffer, preventing screen flicker!
             presenter->frame_counter++;
+            s_clears_in_frame = 0u;
             Switch_NotifyActivity(presenter->frame_counter);
             SwitchAudio_FlushPending();
             return RECOMP_D3D_PRESENTER_OK;
@@ -3166,7 +3171,15 @@ RecompD3dPresenterError d3d_backend_submit(
             s_last_fps_update_tick = now_fps_tick;
         }
 
-        if (presenter->draws_in_frame == 0u && (s_cur_clear_color & 0x00FFFFFFu) != 0u) {
+        // Hold previous complete frame if a single transition frame drops >50% of draws or has 0 draws without a black clear.
+        const bool hold_prev_on_drop = (s_prev_draws_in_frame >= 300u &&
+                                        presenter->draws_in_frame > 0u &&
+                                        presenter->draws_in_frame * 2u < s_prev_draws_in_frame &&
+                                        presenter->last_presented_slot >= 0 &&
+                                        presenter->last_presented_slot != presenter->current_slot);
+        if (hold_prev_on_drop ||
+            (presenter->draws_in_frame == 0u &&
+             (s_clears_in_frame == 0u || (s_cur_clear_color & 0x00FFFFFFu) != 0u))) {
             if (presenter->last_presented_slot >= 0 &&
                 presenter->last_presented_slot != presenter->current_slot) {
                 DkImageRect full_rect = { 0, 0, 0, presenter->width, presenter->height, 1 };
@@ -3477,6 +3490,8 @@ RecompD3dPresenterError d3d_backend_submit(
             }
             g_perf = PerfStats{ .last_present = g_perf.last_present };
         }
+        s_prev_draws_in_frame = presenter->draws_in_frame;
+        s_clears_in_frame = 0u;
         presenter->draws_in_frame = 0;
         presenter->tex_uploads_in_frame = 0;
 
