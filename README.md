@@ -18,7 +18,7 @@ Unlike traditional emulation, the original game runs natively on Nintendo Switch
 ## ✨ Features
 
 - **Full-Speed 60 FPS on Stock Clocks:** Plays smoothly at 60 FPS in both Handheld and Docked modes with zero overclocking required.
-- **16:9 Native Widescreen**
+- **16:9 Native Widescreen:** True panoramic 16:9 gameplay with an expanded field of view and ZERO character stretching—filling both the Switch screen and your TV edge-to-edge on Full HD
 - **Faithful Xbox Visuals:** Dynamic lighting, real-time shadows, stage effects, and character models rendered natively on Switch hardware at Full HD.
 - **Original Audio & Full FMV Cutscenes:** Crisp stereo sound, character voices, background music, and full video cinematics (`movie.afs` & `bgm.afs`).
 - **2-Player Local Battles:** Challenge friends in VS mode using Handheld, Gamepad, or Joy-Cons.
