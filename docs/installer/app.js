@@ -107,12 +107,18 @@ function updateUI() {
 
   const hint = $("final-size-hint");
   if (readyXbox) {
-    const xboxBytes = reqKeys.reduce((acc, k) => acc + state.xbox[k].blob.size, 0);
-    const guestsBytes = state.guestsBlob ? state.guestsBlob.size : 720 * 1024 * 1024;
+    const xboxOtherBytes = ["default.xbe", "movie.afs", "bgm.afs"].reduce(
+      (acc, k) => acc + state.xbox[k].blob.size,
+      0
+    );
+    const guestsBytes = state.guestsBlob
+      ? state.guestsBlob.size
+      : state.xbox["root.olk"].blob.size + 38 * 1024 * 1024;
+    const nroBytes = state.nroBlob ? state.nroBlob.blob.size : 23 * 1024 * 1024;
     const prefix = state.guestsBlob ? "Final package size" : "Estimated final size";
-    hint.textContent = `${prefix}: ~${formatBytes(xboxBytes + guestsBytes)}`;
+    hint.textContent = `${prefix}: ~${formatBytes(xboxOtherBytes + guestsBytes + nroBytes)}`;
   } else {
-    hint.textContent = "Estimated final size: ~2.1 GB";
+    hint.textContent = "Estimated final size: ~1.34 GB";
   }
 }
 
@@ -428,7 +434,6 @@ async function buildSwitchPackageZip() {
 
     const entries = [
       { name: "switch/soulcalibur2/Default.xbe", input: state.xbox["default.xbe"].blob },
-      { name: "switch/soulcalibur2/root.olk", input: state.xbox["root.olk"].blob },
       { name: "switch/soulcalibur2/movie.afs", input: state.xbox["movie.afs"].blob },
       { name: "switch/soulcalibur2/bgm.afs", input: state.xbox["bgm.afs"].blob },
       { name: "switch/soulcalibur2/guests.olk", input: guests },
