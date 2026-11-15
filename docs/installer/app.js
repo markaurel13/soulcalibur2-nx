@@ -140,7 +140,29 @@ async function handleXboxInput(fileList) {
     if (foundCount === 0) {
       log("Default.xbe / root.olk / movie.afs / bgm.afs were not found inside the ISO.", "error");
     } else {
-      log(`Xbox ISO parsed: ${foundCount}/4 files ready (streaming, zero RAM copy).`, "ok");
+      const xbeEntry = entries["default.xbe"];
+      if (xbeEntry) {
+        const xbeHdr = await file.slice(xbeEntry.offset, xbeEntry.offset + Math.min(xbeEntry.size, 8192)).arrayBuffer();
+        if (xbeHdr.byteLength >= 0x120) {
+          const dv = new DataView(xbeHdr);
+          const magic = String.fromCharCode(...new Uint8Array(xbeHdr, 0, 4));
+          if (magic === "XBEH") {
+            const baseAddr = dv.getUint32(0x104, true);
+            const certAddr = dv.getUint32(0x118, true);
+            const certOff = certAddr - baseAddr;
+            if (certAddr >= baseAddr && certOff + 0xa4 <= xbeHdr.byteLength) {
+              const gameRegion = dv.getUint32(certOff + 0xa0, true);
+              if ((gameRegion & 0x00000001) === 0) {
+                for (const k of Object.keys(state.xbox)) state.xbox[k] = null;
+                log("Only USA (NTSC-U) Xbox copies are supported (this ISO is not North America region).", "error");
+                updateUI();
+                return;
+              }
+            }
+          }
+        }
+      }
+      log(`Xbox ISO parsed: ${foundCount}/4 files ready.`, "ok");
     }
   } catch (err) {
     log(`Failed to read Xbox ISO: ${err.message}`, "error");
@@ -193,7 +215,7 @@ async function handlePs2Input(fileList) {
   try {
     const entries = await DiscParsers.parsePs2Iso(file);
     if (!entries["root.olk"] || !entries["slus_206.43"]) {
-      throw new Error("Missing ROOT.OLK or SLUS_206.43 in the PS2 ISO (make sure to use Soulcalibur II USA).");
+      throw new Error("Only USA (NTSC-U) PS2 copies are supported (ROOT.OLK or SLUS_206.43 not found).");
     }
     state.ps2["root.olk"] = {
       name: "root.olk",

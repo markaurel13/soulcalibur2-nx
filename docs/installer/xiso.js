@@ -102,6 +102,10 @@ export const DiscParsers = (() => {
     if (magic !== 0xc2339f3d) {
       throw new Error("Invalid GameCube header (magic != 0xC2339F3D).");
     }
+    const gameId = decodeAscii(new Uint8Array(hdrBuf, 0, 6));
+    if (gameId !== "GRSEAF") {
+      throw new Error(`Only USA (NTSC-U) GameCube copies are supported (expected GRSEAF, got '${gameId}').`);
+    }
 
     const dolOffset = dv.getUint32(0x420, false);
     const fstOffset = dv.getUint32(0x424, false);
