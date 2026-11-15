@@ -183,8 +183,8 @@ async function handleGameCubeInput(fileList) {
   const file = fileList[0];
   if (!file) return;
   const low = file.name.toLowerCase();
-  if (!low.endsWith(".iso") && !low.endsWith(".gcm")) {
-    log(`Unsupported file '${file.name}'. Please provide a GameCube .iso or .gcm file.`, "error");
+  if (!low.endsWith(".iso") && !low.endsWith(".gcm") && !low.endsWith(".ciso")) {
+    log(`Unsupported file '${file.name}'. Please provide a GameCube .iso, .gcm, or .ciso file.`, "error");
     return;
   }
 
@@ -196,11 +196,11 @@ async function handleGameCubeInput(fileList) {
     }
     state.gc["root.olk"] = {
       name: "root.olk",
-      blob: file.slice(entries["root.olk"].offset, entries["root.olk"].offset + entries["root.olk"].size),
+      blob: entries["root.olk"].blob,
     };
     state.gc["boot.dol"] = {
       name: "boot.dol",
-      blob: file.slice(entries["boot.dol"].offset, entries["boot.dol"].offset + entries["boot.dol"].size),
+      blob: entries["boot.dol"].blob,
     };
     state.guestsBlob = null;
     log("GameCube ISO ready to extract Link.", "ok");

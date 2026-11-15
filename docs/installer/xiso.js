@@ -91,9 +91,72 @@ export const DiscParsers = (() => {
     return files;
   }
 
-  // ---- 2. GameCube GCM/ISO Parser ----
+  // ---- 2. GameCube GCM/ISO/CISO Parser ----
+  async function createGcDiscReader(file) {
+    const headBuf = await readSlice(file, 0, 0x8000);
+    if (headBuf.byteLength < 0x440) {
+      throw new Error("File is too small to be a valid GameCube ISO.");
+    }
+    const headU8 = new Uint8Array(headBuf);
+    const isCiso = decodeAscii(headU8.subarray(0, 4)) === "CISO";
+
+    if (!isCiso) {
+      return {
+        read: (offset, length) => readSlice(file, offset, length),
+        sliceBlob: (offset, length) => file.slice(offset, offset + length),
+      };
+    }
+
+    if (headBuf.byteLength < 0x8000) {
+      throw new Error("File is too small to be a valid CISO image.");
+    }
+    const blockSize = new DataView(headBuf).getUint32(4, true);
+    if (!blockSize || (blockSize & (blockSize - 1)) !== 0) {
+      throw new Error("Invalid CISO block size.");
+    }
+
+    const mapLen = 0x8000 - 8;
+    const blockMap = new Int32Array(mapLen);
+    let physIdx = 0;
+    for (let i = 0; i < mapLen; i++) {
+      if (headU8[8 + i] !== 0) {
+        blockMap[i] = physIdx++;
+      } else {
+        blockMap[i] = -1;
+      }
+    }
+
+    function sliceBlob(offset, length) {
+      const parts = [];
+      let cur = offset;
+      let rem = length;
+      while (rem > 0) {
+        const b = Math.floor(cur / blockSize);
+        const inner = cur % blockSize;
+        const take = Math.min(rem, blockSize - inner);
+        const phys = b < mapLen ? blockMap[b] : -1;
+        if (phys >= 0) {
+          const physOff = 0x8000 + phys * blockSize + inner;
+          parts.push(file.slice(physOff, physOff + take));
+        } else {
+          parts.push(new Uint8Array(take));
+        }
+        cur += take;
+        rem -= take;
+      }
+      return new Blob(parts);
+    }
+
+    async function read(offset, length) {
+      return sliceBlob(offset, length).arrayBuffer();
+    }
+
+    return { read, sliceBlob };
+  }
+
   async function parseGameCubeIso(file) {
-    const hdrBuf = await readSlice(file, 0, 0x440);
+    const disc = await createGcDiscReader(file);
+    const hdrBuf = await disc.read(0, 0x440);
     if (hdrBuf.byteLength < 0x440) {
       throw new Error("File is too small to be a valid GameCube ISO.");
     }
@@ -112,7 +175,7 @@ export const DiscParsers = (() => {
     const fstSize = dv.getUint32(0x428, false);
 
     // Compute boot.dol exact size from DOL section headers
-    const dolHdrBuf = await readSlice(file, dolOffset, 0x100);
+    const dolHdrBuf = await disc.read(dolOffset, 0x100);
     const dolDv = new DataView(dolHdrBuf);
     let dolSize = 0x100;
     for (let i = 0; i < 18; i++) {
@@ -123,14 +186,20 @@ export const DiscParsers = (() => {
       }
     }
 
-    const fstBuf = await readSlice(file, fstOffset, fstSize);
+    const fstBuf = await disc.read(fstOffset, fstSize);
     const fstDv = new DataView(fstBuf);
     const fstU8 = new Uint8Array(fstBuf);
     const numEntries = fstDv.getUint32(8, false);
     const strTableOff = numEntries * 12;
 
     const files = {
-      "boot.dol": { name: "boot.dol", path: "boot.dol", offset: dolOffset, size: dolSize },
+      "boot.dol": {
+        name: "boot.dol",
+        path: "boot.dol",
+        offset: dolOffset,
+        size: dolSize,
+        blob: disc.sliceBlob(dolOffset, dolSize),
+      },
     };
 
     for (let i = 1; i < numEntries; i++) {
@@ -143,7 +212,13 @@ export const DiscParsers = (() => {
       const entryLength = fstDv.getUint32(off + 8, false);
       const name = decodeAscii(fstU8.subarray(strTableOff + nameOff));
       if (name) {
-        files[name.toLowerCase()] = { name, path: name, offset: entryOffset, size: entryLength };
+        files[name.toLowerCase()] = {
+          name,
+          path: name,
+          offset: entryOffset,
+          size: entryLength,
+          blob: disc.sliceBlob(entryOffset, entryLength),
+        };
       }
     }
     return files;
