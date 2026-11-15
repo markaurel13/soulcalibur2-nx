@@ -6,33 +6,26 @@
 
 [![Platform: Nintendo Switch](https://img.shields.io/badge/Platform-Nintendo%20Switch-E60012.svg?logo=nintendoswitch&logoColor=white)](https://github.com/markaurel13/soulcalibur2-nx)
 [![Performance: 60 FPS](https://img.shields.io/badge/Performance-60%20FPS-brightgreen.svg)]()
-[![Graphics: deko3d](https://img.shields.io/badge/Graphics-deko3d%20(Low--Level%20GPU)-blue.svg)](https://github.com/fincs/deko3d)
-[![Audio: audren](https://img.shields.io/badge/Audio-audren%20(Dedicated%20DSP)-purple.svg)]()
+[![Resolution: 1080p Docked / 720p Handheld](https://img.shields.io/badge/Resolution-1080p%20%7C%20720p-blue.svg)]()
 [![Author: markaurel13](https://img.shields.io/badge/Author-markaurel13-orange.svg)](https://github.com/markaurel13)
 
-A high-performance, native static recompilation port of **Soulcalibur II** (Xbox NTSC-U) for the Nintendo Switch.
+A high-performance native port of **Soulcalibur II** (Xbox NTSC-U) for the Nintendo Switch, built via static recompilation.
 
-Unlike traditional emulation, this port statically recompiles the original Xbox x86 game binary directly into native ARM64 machine code, paired with a purpose-built **deko3d** low-level GPU renderer and a native **audren** audio backend.
+Unlike traditional emulation, the original game runs natively on Nintendo Switch hardware with zero emulation overhead—delivering full-speed **60 FPS** gameplay, sharp **1080p** visuals on TV, and **Spawn** as the exclusive Xbox guest fighter.
 
 ---
 
 ## ✨ Features
 
-- **~60 FPS on Stock Clocks:** Running at full speed on Stock Clocks, both Handheld and Docked.
-- **Dynamic Docked / Handheld Resolution Scaling:**
-  - **Docked Mode:** Renders natively at **1920x1080 (1080p)** with hardware swapchain scaling.
-  - **Handheld Mode:** Renders natively at **1280x720 (720p)**.
-  - **Hot-Swap Support:** Automatically recreates the swapchain and render targets when docking or undocking mid-game.
-- **Custom Low-Level `deko3d` Graphics Pipeline:**
-  - Hardware D3D8 fixed-function vertex transformation, lighting, skinning, and register combiners translated to native Tegra X1 shaders.
-  - Hardware BC1/BC2/BC3 (DXT1/3/5) texture decoding, mipmaps, and stencil shadow volumes.
-  - Dedicated multi-core vertex/draw worker pipeline.
-- **Native `audren` Audio Architecture:**
-  - Dedicated audio flush worker on Core 3 (`48 kHz` stereo, 48 HW voice channels, 24 active voices) with zero dynamic voice ducking.
-- **Local Multiplayer & Full Controller Support:**
-  - Supports Handheld mode, Pro Controllers, dual Joy-Cons, and up to 4 players via `HidNpadStyleSet_NpadFullCtrl`.
-- **In-Game FPS Overlay:**
-  - Toggle the real-time FPS counter anytime with **`L + R + D-Pad Down`** or **`ZL + ZR + D-Pad Down`**.
+- **Full-Speed 60 FPS on Stock Clocks:** Plays smoothly at 60 FPS in both Handheld and Docked modes with zero overclocking required.
+- **Native 1080p Docked / 720p Handheld:**
+  - **Docked (TV Mode):** Crisp **1920x1080 Full HD** output.
+  - **Handheld Mode:** Native **1280x720** screen resolution.
+  - **Seamless Switching:** Automatically adapts resolution in real time when you dock or undock the console.
+- **Faithful Xbox Visuals:** Dynamic lighting, real-time shadows, stage effects, and character models rendered natively on Switch hardware.
+- **Original Audio & Full FMV Cutscenes:** Crisp stereo sound, character voices, background music, and full video cinematics (`movie.afs` & `bgm.afs`).
+- **2-Player Local Battles:** Challenge friends in VS mode using Handheld, Pro Controllers, or Joy-Cons.
+- **All Classic Modes Included:** Arcade, VS Battle, Team Battle, Time Attack, Survival, Practice, and Weapon Master, with automatic saving to your microSD card.
 
 ---
 
@@ -65,14 +58,9 @@ sdmc:/
 
 ---
 
-## 🎮 Controls & Shortcuts
+## 🎮 Controls
 
-Standard Nintendo Switch controller mapping (Xbox face buttons mapped positionally: **B** = A, **A** = B, **Y** = X, **X** = Y, **Plus (+)** = Start, **Minus (-)** = Back).
-
-| Shortcut | Action |
-| :--- | :--- |
-| **`L + R + D-Pad Down`** *(or `ZL + ZR + D-Pad Down`)* | Toggle in-game FPS overlay |
-| **`L + R + D-Pad Up`** | Toggle GPU / CPU vertex pipeline |
+Standard Nintendo Switch controller layout (Xbox face buttons mapped positionally: **B** = A, **A** = B, **Y** = X, **X** = Y, **Plus (+)** = Start, **Minus (-)** = Back).
 
 ---
 
@@ -102,8 +90,7 @@ The compiled executable will be generated at `build/switch/soulcalibur2.nro`.
 ## 🙏 Credits & Upstream
 
 - **Upstream Recompilation Project:** [tmcleroy/soulcalibur2-recomp](https://github.com/tmcleroy/soulcalibur2-recomp)
-- **Switch Graphics API:** [fincs/deko3d](https://github.com/fincs/deko3d)
-- **Toolchain & SDK:** [devkitPro / libnx](https://github.com/switchbrew/libnx)
+- **Switch Graphics & SDK:** [fincs/deko3d](https://github.com/fincs/deko3d) & [devkitPro / libnx](https://github.com/switchbrew/libnx)
 
 ---
 

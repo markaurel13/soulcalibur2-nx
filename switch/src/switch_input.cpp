@@ -81,19 +81,8 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
     HidAnalogStickState rStick = padGetStickPos(&SwitchInput::s_pads[port], 1);
 
     if (port == 0) {
-        static uint64_t s_last_vtx_toggle_tick = 0;
         static uint64_t s_last_fps_toggle_tick = 0;
         uint64_t now_tick = armGetSystemTick();
-
-        // L + R + DPad Up: Toggle Vertex Pipeline (GPU vs CPU)
-        if (now_tick - s_last_vtx_toggle_tick > 9600000ULL) { // 0.5s debounce
-            if ((kHeld & HidNpadButton_L) && (kHeld & HidNpadButton_R) && (kHeld & HidNpadButton_Up)) {
-                s_gpu_vtx_enabled = !s_gpu_vtx_enabled;
-                s_last_vtx_toggle_tick = now_tick;
-                printf("[Deko3D] >>> TOGGLED VERTEX PIPELINE: %s <<<\n",
-                       s_gpu_vtx_enabled ? "GPU (Fast Fixed-Function)" : "CPU (Legacy Fallback)");
-            }
-        }
 
         // L + R + DPad Down OR ZL + ZR + DPad Down: Toggle FPS Overlay
         if (now_tick - s_last_fps_toggle_tick > 9600000ULL) { // 0.5s debounce
