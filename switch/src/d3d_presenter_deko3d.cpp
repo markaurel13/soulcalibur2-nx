@@ -17,6 +17,7 @@ namespace SwitchInput { extern PadState s_pads[4]; }
 #include <vector>
 
 extern "C" {
+extern uint32_t sc2_scene;
 void SwitchAudio_FlushPending(void);
 void SwitchAudio_TakePerf(uint64_t *update_ticks, uint64_t *submit_ticks, uint64_t *flush_ticks,
                           uint32_t *updates, uint32_t *submits);
@@ -852,12 +853,12 @@ static uint32_t lookupOrUploadSingleTexture(
     const bool dxt3 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_DXT3);
     const bool dxt5 = (fmt == RECOMP_D3D_TEXTURE_FORMAT_DXT5);
     const bool any_bc = (dxt1 || dxt3 || dxt5);
-    // Deko3D CopyBufferToImage corrupts/drops blocks on narrow BCn textures (width < 128);
-    // decode them (and mipmapped / >=64x64 pow2 stage textures) on CPU to BGRA8 so they upload
-    // via the linear BGRA8 path and get full GPU-generated mipmaps.
+    // Deko3D CopyBufferToImage corrupts/drops blocks on narrow/short BCn textures
+    // (width < 128 or height < 64, e.g. 128x32 DXT3); decode them (and mipmapped /
+    // >=64x64 pow2 stage textures) on CPU to BGRA8 so they upload cleanly with full mipmaps.
     const bool want_mips = !desc.linear && isPow2U32(desc.width) && isPow2U32(desc.height) &&
         (desc.mip_levels > 1u || (desc.width >= 64u && desc.height >= 64u));
-    const bool small_bc_cpu = any_bc && (desc.width < 128u || want_mips);
+    const bool small_bc_cpu = any_bc && (desc.width < 128u || desc.height < 64u || want_mips);
     const bool compressed = (any_bc && !small_bc_cpu);
 
     uint64_t t_tex_start = perfNow();
@@ -2135,6 +2136,10 @@ RecompD3dPresenterError d3d_backend_submit(
 
         if (command->data.clear.clear_color) {
             uint32_t c = command->data.clear.color;
+            if (sc2_scene == 5u && c == 0xff98a1aau) {
+                // Main menu after Arcade can inherit 0xff98a1aa clear color; keep menu background/transitions black.
+                c = 0xff000000u;
+            }
             s_cur_clear_color = c;
             if ((c & 0x00FFFFFFu) != 0u) {
                 ++g_sdiag.nonblack_clear;
@@ -3193,10 +3198,6 @@ RecompD3dPresenterError d3d_backend_submit(
                 dkCmdBufSetScissors(cmd, 0, &full_sc, 1);
                 dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
             }
-        } else if (presenter->draws_in_frame <= 40u && (s_cur_clear_color & 0x00FFFFFFu) != 0u) {
-            DkScissor full_sc = { 0, 0, presenter->width, presenter->height };
-            dkCmdBufSetScissors(cmd, 0, &full_sc, 1);
-            dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
         }
 
         if (Switch_IsFpsOverlayEnabled()) {
