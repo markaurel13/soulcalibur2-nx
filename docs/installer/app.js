@@ -95,11 +95,11 @@ function updateUI() {
     .join("");
 
   $("gc-status").innerHTML = readyGc
-    ? `<span class="pill ok">✓ Link ready (${formatBytes(state.gc["root.olk"].blob.size)})</span>`
+    ? `<span class="pill ok">✓ Link ready (~20.3 MB)</span>`
     : `<span class="pill missing">✗ GameCube ISO (Link)</span>`;
 
   $("ps2-status").innerHTML = readyPs2
-    ? `<span class="pill ok">✓ Heihachi ready (${formatBytes(state.ps2["root.olk"].blob.size)})</span>`
+    ? `<span class="pill ok">✓ Heihachi ready (~15.9 MB)</span>`
     : `<span class="pill missing">✗ PS2 ISO (Heihachi)</span>`;
 
   const canBuild = readyXbox && readyGc && readyPs2;
