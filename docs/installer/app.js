@@ -1,4 +1,5 @@
 import { DiscParsers } from "./xiso.js";
+import { downloadZip } from "https://cdn.jsdelivr.net/npm/client-zip@2.4.5/+esm";
 
 const REPO_OWNER = "markaurel13";
 const REPO_NAME = "soulcalibur2-nx";
@@ -89,18 +90,18 @@ function updateUI() {
 
   $("gc-status").innerHTML = readyGc
     ? `<span class="pill ok">✓ Link ready (${formatBytes(state.gc["root.olk"].blob.size)})</span>`
-    : `<span class="pill muted">Optional: GameCube ISO for Link</span>`;
+    : `<span class="pill missing">✗ GameCube ISO (Link)</span>`;
 
   $("ps2-status").innerHTML = readyPs2
     ? `<span class="pill ok">✓ Heihachi ready (${formatBytes(state.ps2["root.olk"].blob.size)})</span>`
-    : `<span class="pill muted">Optional: PS2 ISO for Heihachi</span>`;
+    : `<span class="pill missing">✗ PS2 ISO (Heihachi)</span>`;
 
-  const canBuild = readyXbox;
+  const canBuild = readyXbox && readyGc && readyPs2;
+  $("btn-build-zip").disabled = !canBuild;
   $("btn-export-sd").disabled = !canBuild;
-  $("btn-download-list").disabled = !canBuild;
 
   if (!window.showDirectoryPicker) {
-    $("btn-export-sd").title = "Your browser does not support direct folder writing; use Chrome/Edge/Brave or Individual Downloads.";
+    $("btn-export-sd").title = "Your browser does not support direct folder writing; use Chrome/Edge/Brave or Build Switch Package.";
   }
 }
 
@@ -381,34 +382,69 @@ async function exportToDirectory() {
   }
 }
 
-async function showManualDownloads() {
+async function buildSwitchPackageZip() {
   try {
     const guests = await buildGuestsIfNeeded();
-    const container = $("manual-downloads");
-    container.hidden = false;
-    container.innerHTML = "";
-
-    const items = [
-      state.xbox["default.xbe"],
-      state.xbox["root.olk"],
-      state.xbox["movie.afs"],
-      state.xbox["bgm.afs"],
-    ];
-    if (guests) items.push({ name: "guests.olk", blob: guests });
-
-    for (const item of items) {
-      const a = document.createElement("a");
-      a.className = "dl-chip";
-      a.href = URL.createObjectURL(item.blob);
-      a.download = item.name;
-      a.textContent = `⬇ ${item.name} (${formatBytes(item.blob.size)})`;
-      container.appendChild(a);
+    if (!guests) {
+      throw new Error("Both GameCube and PS2 discs are required to build guests.olk.");
     }
 
-    setProgress(100, "Files ready to download manually to sdmc:/switch/soulcalibur2/");
-    log("Download links generated.", "ok");
+    const entries = [
+      { name: "switch/soulcalibur2/Default.xbe", input: state.xbox["default.xbe"].blob },
+      { name: "switch/soulcalibur2/root.olk", input: state.xbox["root.olk"].blob },
+      { name: "switch/soulcalibur2/movie.afs", input: state.xbox["movie.afs"].blob },
+      { name: "switch/soulcalibur2/bgm.afs", input: state.xbox["bgm.afs"].blob },
+      { name: "switch/soulcalibur2/guests.olk", input: guests },
+    ];
+    if (state.nroBlob) {
+      entries.push({ name: `switch/soulcalibur2/${state.nroBlob.name}`, input: state.nroBlob.blob });
+    }
+
+    const totalBytes = entries.reduce((acc, e) => acc + e.input.size, 0);
+    setProgress(75, "Packaging switch/soulcalibur2/ into ZIP...");
+    log(`Packaging Switch ZIP (${formatBytes(totalBytes)})...`);
+
+    const zipResponse = downloadZip(entries);
+
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: "soulcalibur2_nx_package.zip",
+        types: [{ description: "ZIP Archive", accept: { "application/zip": [".zip"] } }],
+      });
+      const writable = await handle.createWritable();
+      let written = 0;
+      const reader = zipResponse.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          await writable.write(value);
+          written += value.byteLength;
+          const pct = 75 + Math.min(25, (written / totalBytes) * 25);
+          setProgress(pct, `Saving soulcalibur2_nx_package.zip... (${formatBytes(written)})`);
+        }
+      } finally {
+        await writable.close();
+      }
+      setProgress(100, "Switch package saved! Extract it to the root of your microSD card.");
+      log("Done! soulcalibur2_nx_package.zip saved (switch/soulcalibur2/ structure).", "ok");
+    } else {
+      const zipBlob = await zipResponse.blob();
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "soulcalibur2_nx_package.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      setProgress(100, "Switch package downloaded! Extract it to the root of your microSD card.");
+      log("Done! soulcalibur2_nx_package.zip download started.", "ok");
+    }
   } catch (err) {
-    log(`Error preparing downloads: ${err.message}`, "error");
+    if (err.name !== "AbortError") {
+      log(`Error building Switch package: ${err.message}`, "error");
+    }
   }
 }
 
@@ -435,7 +471,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireDropzone("drop-xbox", "file-xbox", handleXboxInput);
   wireDropzone("drop-gc", "file-gc", handleGameCubeInput);
   wireDropzone("drop-ps2", "file-ps2", handlePs2Input);
+  $("btn-build-zip").addEventListener("click", buildSwitchPackageZip);
   $("btn-export-sd").addEventListener("click", exportToDirectory);
-  $("btn-download-list").addEventListener("click", showManualDownloads);
   updateUI();
 });
