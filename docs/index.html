@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Soulcalibur II NX — Web Installer</title>
+  <style>
+    :root {
+      --bg: #0b0d14;
+      --card: #131724;
+      --border: #262d44;
+      --accent: #e60012;
+      --gold: #f5c451;
+      --text: #eef1f8;
+      --muted: #9aa4bf;
+      --ok: #2ecc71;
+      --warn: #f39c12;
+      --err: #e74c3c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at top, #181e33 0%, var(--bg) 60%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 32px 16px 64px;
+    }
+    .container { max-width: 860px; margin: 0 auto; }
+    header { text-align: center; margin-bottom: 28px; }
+    header img {
+      width: 120px; height: 120px; border-radius: 20px;
+      border: 2px solid var(--gold);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    }
+    h1 { margin: 14px 0 6px; font-size: 2rem; letter-spacing: 0.3px; }
+    .subtitle { color: var(--muted); font-size: 0.98rem; margin: 0; }
+    .release-bar {
+      margin-top: 16px;
+      background: rgba(245, 196, 81, 0.08);
+      border: 1px solid rgba(245, 196, 81, 0.35);
+      border-radius: 12px;
+      padding: 12px 16px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 11px 18px; border-radius: 10px; border: none;
+      font-weight: 600; font-size: 0.95rem; cursor: pointer; text-decoration: none;
+      transition: transform 0.12s ease, opacity 0.12s ease;
+    }
+    .btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-gold { background: var(--gold); color: #111; }
+    .btn-secondary { background: #232a40; color: var(--text); border: 1px solid var(--border); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 18px;
+    }
+    .card h2 { margin: 0 0 8px; font-size: 1.15rem; display: flex; align-items: center; gap: 8px; }
+    .card p { margin: 0 0 14px; color: var(--muted); font-size: 0.92rem; }
+    .dropzone {
+      border: 2px dashed #354062;
+      border-radius: 12px;
+      padding: 22px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+      background: rgba(255,255,255,0.02);
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--gold);
+      background: rgba(245, 196, 81, 0.06);
+    }
+    .dropzone input { display: none; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 680px) { .grid-2 { grid-template-columns: 1fr; } }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .pill {
+      font-size: 0.82rem; padding: 4px 10px; border-radius: 999px;
+      background: #1d2336; border: 1px solid var(--border);
+    }
+    .pill.ok { border-color: rgba(46, 204, 113, 0.5); color: var(--ok); }
+    .pill.missing { border-color: rgba(231, 76, 60, 0.4); color: #ff8787; }
+    .pill.muted { color: var(--muted); }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+    .progress-outer {
+      width: 100%; height: 10px; background: #1c2235; border-radius: 999px;
+      overflow: hidden; margin-top: 14px;
+    }
+    .progress-inner {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--gold));
+      transition: width 0.15s ease;
+    }
+    .progress-label { font-size: 0.85rem; color: var(--muted); margin-top: 6px; }
+    .dl-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .dl-chip {
+      background: #1e263d; color: var(--text); border: 1px solid var(--border);
+      padding: 8px 14px; border-radius: 8px; text-decoration: none; font-size: 0.88rem;
+    }
+    .dl-chip.dl-nro { border-color: var(--gold); color: var(--gold); }
+    .log-box {
+      background: #080a10; border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px; height: 160px; overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem;
+    }
+    .log-line { margin-bottom: 4px; }
+    .log-ok { color: var(--ok); }
+    .log-warn { color: var(--warn); }
+    .log-error { color: var(--err); }
+    footer { text-align: center; color: var(--muted); font-size: 0.82rem; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <img src="https://raw.githubusercontent.com/markaurel13/soulcalibur2-nx/switch-port/switch/assets/icon.jpg" alt="Soulcalibur II NX" />
+      <h1>Soulcalibur II NX — Web Installer</h1>
+      <p class="subtitle">Prepara tu tarjeta microSD de Nintendo Switch 100% en tu navegador, sin alojar archivos con copyright.</p>
+
+      <div class="release-bar">
+        <span id="release-info">Buscando última versión de <code>soulcalibur2.nro</code> en GitHub Releases...</span>
+        <a id="btn-download-nro" class="btn btn-gold" href="#" hidden>⬇ Descargar último soulcalibur2.nro</a>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>1. Disco Base — Xbox NTSC-U (Obligatorio)</h2>
+      <p>Arrastra tu <strong>ISO de Xbox (.iso / .xiso)</strong> de Soulcalibur II, o directamente los archivos extraídos (<code>Default.xbe</code>, <code>root.olk</code>, <code>movie.afs</code>, <code>bgm.afs</code>). <em>Opcional: también puedes soltar aquí tu <code>soulcalibur2.nro</code> si quieres copiarlo todo junto.</em></p>
+      <div class="dropzone" id="drop-xbox">
+        <input type="file" id="file-xbox" multiple accept=".iso,.xiso,.xbe,.olk,.afs,.nro" />
+        <strong>Haz clic o arrastra tu ISO de Xbox aquí</strong><br />
+        <span style="color: var(--muted); font-size: 0.85rem;">Lectura directa por streaming (no carga la ISO entera en RAM)</span>
+      </div>
+      <div class="pills" id="xbox-status"></div>
+    </section>
+
+    <section class="card">
+      <h2>2. Personajes Invitados — Link &amp; Heihachi (Opcional)</h2>
+      <p>Si quieres desbloquear a <strong>Link</strong> y/o <strong>Heihachi</strong> junto a Spawn, arrastra tus ISOs legales de GameCube y/o PS2 (NTSC-U). Se generará <code>guests.olk</code> directamente en tu navegador.</p>
+      <div class="grid-2">
+        <div>
+          <div class="dropzone" id="drop-gc">
+            <input type="file" id="file-gc" multiple accept=".iso,.gcm,.olk,.dol" />
+            <strong>GameCube ISO (Link)</strong><br />
+            <span style="color: var(--muted); font-size: 0.82rem;">.iso / .gcm o root.olk + boot.dol</span>
+          </div>
+          <div class="pills" id="gc-status"></div>
+        </div>
+        <div>
+          <div class="dropzone" id="drop-ps2">
+            <input type="file" id="file-ps2" multiple accept=".iso,.olk,.43" />
+            <strong>PS2 ISO (Heihachi)</strong><br />
+            <span style="color: var(--muted); font-size: 0.82rem;">.iso o ROOT.OLK + SLUS_206.43</span>
+          </div>
+          <div class="pills" id="ps2-status"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3. Instalar en Nintendo Switch</h2>
+      <p>Selecciona la raíz de tu tarjeta microSD (o una carpeta temporal) para copiar todo listo dentro de <code>switch/soulcalibur2/</code>.</p>
+      <div class="actions">
+        <button id="btn-export-sd" class="btn btn-primary" disabled>⚡ Elegir carpeta / microSD e Instalar</button>
+        <button id="btn-download-list" class="btn btn-secondary" disabled>⬇ Generar descargas individuales</button>
+      </div>
+      <div id="progress-wrap" hidden>
+        <div class="progress-outer"><div id="progress-bar" class="progress-inner"></div></div>
+        <div id="progress-label" class="progress-label"></div>
+      </div>
+      <div id="manual-downloads" class="dl-list" hidden></div>
+    </section>
+
+    <section class="card">
+      <h2>Registro</h2>
+      <div id="log-output" class="log-box"></div>
+    </section>
+
+    <footer>
+      Soulcalibur II NX no aloja ni distribuye ROMs, ISOs ni archivos con copyright. Todo el procesamiento ocurre localmente en tu navegador.
+    </footer>
+  </div>
+
+  <script type="module" src="./installer/app.js"></script>
+</body>
+</html>
