@@ -11,12 +11,13 @@
 
 A high-performance native port of **Soulcalibur II** (Xbox NTSC-U) for the Nintendo Switch, built via static recompilation.
 
-Unlike traditional emulation, the original game runs natively on Nintendo Switch hardware with zero emulation overhead—delivering full-speed **60 FPS** gameplay, sharp **1080p** visuals on TV, and **Spawn** as the exclusive Xbox guest fighter.
+Unlike traditional emulation, the original game runs natively on Nintendo Switch hardware with zero emulation overhead—delivering full-speed **60 FPS** gameplay, sharp **1080p** visuals on TV, and **all console-exclusive guest fighters (Spawn, Link, and Heihachi)** playable together.
 
 ---
 
 ## ✨ Features
 
+- **All Console-Exclusive Fighters Included:** Play with **Spawn** (Xbox), **Link** (GameCube), and **Heihachi** (PS2) all in one definitive roster.
 - **Full-Speed 60 FPS on Stock Clocks:** Plays smoothly at 60 FPS in both Handheld and Docked modes with zero overclocking required.
 - **16:9 Native Widescreen:** True panoramic 16:9 gameplay with an expanded field of view and ZERO character stretching—filling both the Switch screen and your TV edge-to-edge on Full HD
 - **Faithful Xbox Visuals:** Dynamic lighting, real-time shadows, stage effects, and character models rendered natively on Switch hardware at Full HD.
