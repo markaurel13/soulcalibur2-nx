@@ -2,12 +2,78 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <atomic>
+#include <sys/stat.h>
 #include "input_model.h"
+#include "switch_mod_menu.h"
+#include "sc2_training.h"
+
+extern "C" uint32_t sc2_scene;
+extern "C" uint8_t *recomp_memory(uint32_t guest_address, size_t width);
+extern "C" bool Switch_IsAppExiting(void);
 
 #ifdef SWITCH_PGO_GENERATE
-#include <sys/stat.h>
 extern "C" void __gcov_dump(void);
 #endif
+
+static const char *MOD_CONFIG_PATH = "sdmc:/switch/soulcalibur2/save/config.txt";
+
+static std::atomic<bool> s_mod_menu_open{false};
+static std::atomic<bool> s_mod_unlock_all{false};
+static std::atomic<int>  s_mod_cursor{0};
+static std::atomic<bool> s_mod_unlock_applied{false};
+static bool s_mod_config_loaded = false;
+
+static void saveModConfig(bool unlock_all) {
+    mkdir("sdmc:/switch/soulcalibur2", 0777);
+    mkdir("sdmc:/switch/soulcalibur2/save", 0777);
+    FILE *f = fopen(MOD_CONFIG_PATH, "w");
+    if (f) {
+        fprintf(f, "unlock_all=%s\n", unlock_all ? "ON" : "OFF");
+        fclose(f);
+    }
+}
+
+static void loadOrCreateModConfig(void) {
+    if (s_mod_config_loaded) return;
+    s_mod_config_loaded = true;
+    FILE *f = fopen(MOD_CONFIG_PATH, "r");
+    if (!f) {
+        s_mod_unlock_all.store(false, std::memory_order_release);
+        saveModConfig(false);
+        printf("[ModMenu] Created default %s (unlock_all=OFF)\n", MOD_CONFIG_PATH);
+        return;
+    }
+    char line[128];
+    bool val = false;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "unlock_all=", 11) == 0) {
+            const char *p = line + 11;
+            if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0 || p[0] == '1') {
+                val = true;
+            }
+        }
+    }
+    fclose(f);
+    s_mod_unlock_all.store(val, std::memory_order_release);
+    printf("[ModMenu] Loaded %s (unlock_all=%s)\n", MOD_CONFIG_PATH, val ? "ON" : "OFF");
+}
+
+extern "C" bool SwitchModMenu_IsOpen(void) {
+    return s_mod_menu_open.load(std::memory_order_acquire);
+}
+
+extern "C" bool SwitchModMenu_GetUnlockAll(void) {
+    return s_mod_unlock_all.load(std::memory_order_acquire);
+}
+
+extern "C" int SwitchModMenu_GetCursor(void) {
+    return s_mod_cursor.load(std::memory_order_acquire);
+}
+
+extern "C" bool SwitchModMenu_WasApplied(void) {
+    return s_mod_unlock_applied.load(std::memory_order_acquire);
+}
 
 static bool s_gpu_vtx_enabled = true;
 static bool s_fps_overlay_enabled = false;
@@ -63,6 +129,107 @@ void ShowControllerApplet(int minPlayers, int maxPlayers) {
 
 } // namespace SwitchInput
 
+static u64 s_pause_prev_held = 0;
+static bool s_pause_prev_stick_lr = false;
+static bool s_pause_minus_released = false;
+static uint64_t s_pause_close_minus_start = 0;
+static uint64_t s_minus_hold_start = 0;
+static bool s_minus_toggled = false;
+
+static bool applyFull300UnlockAll(void) {
+    if (!sc2::TrainingUnlockAll()) return false;
+    uint8_t *items = recomp_memory(0x3bb368u, 300u);
+    std::memset(items, 3u, 300u);
+    uint8_t *packed = recomp_memory(0x3bb1f0u, 75u);
+    for (uint32_t n = 0; n < 75u; ++n) {
+        packed[n] = uint8_t((items[4u * n] & 3u) |
+                            ((items[4u * n + 1u] & 3u) << 2) |
+                            ((items[4u * n + 2u] & 3u) << 4) |
+                            ((items[4u * n + 3u] & 3u) << 6));
+    }
+    return true;
+}
+
+extern "C" void SwitchModMenu_ResetPauseState(void) {
+    padUpdate(&SwitchInput::s_pads[0]);
+    s_pause_prev_held = padGetButtons(&SwitchInput::s_pads[0]);
+    HidAnalogStickState st = padGetStickPos(&SwitchInput::s_pads[0], 0);
+    s_pause_prev_stick_lr = (st.x < -16000) || (st.x > 16000);
+    s_pause_minus_released = false;
+    s_pause_close_minus_start = 0;
+}
+
+extern "C" bool SwitchModMenu_TickPause(void) {
+    padUpdate(&SwitchInput::s_pads[0]);
+    u64 cur_held = padGetButtons(&SwitchInput::s_pads[0]);
+    HidAnalogStickState cur_stick = padGetStickPos(&SwitchInput::s_pads[0], 0);
+    u64 kDown = cur_held & ~s_pause_prev_held;
+    s_pause_prev_held = cur_held;
+
+    if (!(cur_held & HidNpadButton_Minus)) {
+        s_pause_minus_released = true;
+        s_pause_close_minus_start = 0;
+    } else if (s_pause_minus_released) {
+        uint64_t t_now = armGetSystemTick();
+        if (s_pause_close_minus_start == 0) {
+            s_pause_close_minus_start = t_now;
+        } else if ((t_now - s_pause_close_minus_start) >= 19200000ULL) {
+            s_mod_menu_open.store(false, std::memory_order_release);
+            return false;
+        }
+    }
+
+    bool stick_lr = (cur_stick.x < -16000) || (cur_stick.x > 16000);
+    bool stick_lr_down = stick_lr && !s_pause_prev_stick_lr;
+    s_pause_prev_stick_lr = stick_lr;
+
+    bool need_refresh = false;
+    constexpr int kNumOptions = 1;
+    if (kDown & HidNpadButton_Up) {
+        int c = s_mod_cursor.load(std::memory_order_acquire);
+        s_mod_cursor.store((c + kNumOptions - 1) % kNumOptions, std::memory_order_release);
+        need_refresh = true;
+    }
+    if (kDown & HidNpadButton_Down) {
+        int c = s_mod_cursor.load(std::memory_order_acquire);
+        s_mod_cursor.store((c + 1) % kNumOptions, std::memory_order_release);
+        need_refresh = true;
+    }
+    if ((kDown & (HidNpadButton_B | HidNpadButton_Left | HidNpadButton_Right)) || stick_lr_down) {
+        int c = s_mod_cursor.load(std::memory_order_acquire);
+        if (c == 0) {
+            bool next_val = !s_mod_unlock_all.load(std::memory_order_acquire);
+            s_mod_unlock_all.store(next_val, std::memory_order_release);
+            saveModConfig(next_val);
+            if (next_val) {
+                bool ok = (sc2_scene != 0u) && applyFull300UnlockAll();
+                if (ok) s_mod_unlock_applied.store(true, std::memory_order_release);
+                printf("[ModMenu] Manual applyFull300UnlockAll() -> %s (scene=%u)\n",
+                       ok ? "OK" : "DEFERRED", sc2_scene);
+            } else {
+                s_mod_unlock_applied.store(false, std::memory_order_release);
+            }
+            printf("[ModMenu] unlock_all=%s (saved to %s)\n", next_val ? "ON" : "OFF", MOD_CONFIG_PATH);
+            need_refresh = true;
+        }
+    }
+    return need_refresh;
+}
+
+extern "C" void SwitchModMenu_WaitReleaseOnExit(void) {
+    while (!Switch_IsAppExiting()) {
+        padUpdate(&SwitchInput::s_pads[0]);
+        u64 cur_held = padGetButtons(&SwitchInput::s_pads[0]);
+        if ((cur_held & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus)) == 0) {
+            break;
+        }
+        svcSleepThread(16000000ULL);
+    }
+    s_minus_hold_start = 0;
+    s_minus_toggled = true;
+    printf("[ModMenu] CLOSED (game resumed)\n");
+}
+
 extern "C" {
 
 bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
@@ -82,8 +249,51 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
     HidAnalogStickState rStick = padGetStickPos(&SwitchInput::s_pads[port], 1);
 
     if (port == 0) {
+        loadOrCreateModConfig();
+
+        // Auto-apply Unlock All once past boot/logos (cur_scene >= 5 and not movie/boot),
+        // and re-apply automatically if a save load overwrites 0x3BB368.
+        if (s_mod_unlock_all.load(std::memory_order_acquire)) {
+            uint32_t cur_scene = *reinterpret_cast<const uint32_t *>(recomp_memory(0x398700u, 4u));
+            if (cur_scene >= 5u && cur_scene != 11u && cur_scene != 29u && cur_scene != 34u) {
+                const uint8_t *items = recomp_memory(0x3bb368u, 300u);
+                bool any_locked = false;
+                for (uint32_t i = 0; i < 300u; ++i) {
+                    if (items[i] != 3u) {
+                        any_locked = true;
+                        break;
+                    }
+                }
+                if (any_locked) {
+                    if (applyFull300UnlockAll()) {
+                        s_mod_unlock_applied.store(true, std::memory_order_release);
+                        printf("[ModMenu] applyFull300UnlockAll() applied (cur_scene=%u, req_scene=%u).\n",
+                               cur_scene, sc2_scene);
+                    }
+                } else if (!s_mod_unlock_applied.load(std::memory_order_acquire)) {
+                    s_mod_unlock_applied.store(true, std::memory_order_release);
+                }
+            }
+        }
+
         static uint64_t s_last_fps_toggle_tick = 0;
         uint64_t now_tick = armGetSystemTick();
+
+        // Hold Minus (-) for 1.0 second to open Mod Menu (pause happens cleanly at PRESENT on D3D worker)
+        if (kHeld & HidNpadButton_Minus) {
+            if (s_minus_hold_start == 0) {
+                s_minus_hold_start = now_tick;
+                s_minus_toggled = false;
+            } else if (!s_minus_toggled && (now_tick - s_minus_hold_start) >= 19200000ULL) {
+                s_minus_toggled = true;
+                s_mod_menu_open.store(true, std::memory_order_release);
+                printf("[ModMenu] OPENED (pausing at frame boundary)\n");
+                return true; // *gamepad stays zeroed
+            }
+        } else {
+            s_minus_hold_start = 0;
+            s_minus_toggled = false;
+        }
 
         // L + R + DPad Down OR ZL + ZR + DPad Down: Toggle FPS Overlay
         if (now_tick - s_last_fps_toggle_tick > 9600000ULL) { // 0.5s debounce
@@ -111,6 +321,8 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
             }
         }
 #endif
+
+        // (Mod Menu runs modally above and freezes the game thread until closed.)
     }
 
     gamepad->thumb_lx = (int16_t)lStick.x;
@@ -125,7 +337,7 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
     if (kHeld & HidNpadButton_Left) b |= (1 << 2);
     if (kHeld & HidNpadButton_Right) b |= (1 << 3);
     if (kHeld & HidNpadButton_Plus) b |= (1 << 4);  // Start
-    if (kHeld & HidNpadButton_Minus) b |= (1 << 5); // Back
+    // Minus (-) is reserved solely for toggling the Mod Menu (no Back action in-game)
     if (kHeld & HidNpadButton_StickL) b |= (1 << 6);
     if (kHeld & HidNpadButton_StickR) b |= (1 << 7);
     gamepad->buttons = b;

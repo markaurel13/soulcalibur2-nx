@@ -4,6 +4,7 @@
 #include "sc2_ff_shaders.h"
 #include "font8x8.h"
 #include "switch_watchdog.h"
+#include "switch_mod_menu.h"
 #include <switch.h>
 namespace SwitchInput { extern PadState s_pads[4]; }
 
@@ -41,6 +42,7 @@ void Switch_TakePushFailProf(uint32_t out[8]);
 bool Switch_IsFpsOverlayEnabled(void);
 }
 #include "switch_d3d_worker.h"
+#include <atomic>
 
 // ---- Diagnostic perf accounting (19.2 MHz system tick; printed every 120 presented frames) ----
 enum GpuPassCategory : uint16_t {
@@ -431,6 +433,9 @@ struct RecompD3dPresenter {
     DkImage backbuffer_snap_image;
     DkImageView backbuffer_snap_view;
     int last_presented_slot;
+    DkMemBlock mod_font_mem;
+    DkImage mod_font_image;
+    bool mod_font_ready;
 
     // Dynamic vertex/index/uniform/staging buffer ring (double-buffered)
     DkMemBlock block_dyn[NUM_CMD_SLOTS];
@@ -1838,9 +1843,17 @@ RecompD3dPresenterError d3d_backend_create(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+static std::atomic<bool> s_app_exiting{false};
+extern "C" bool Switch_IsAppExiting(void) {
+    return s_app_exiting.load(std::memory_order_acquire);
+}
+
 static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
     if (p->current_slot >= 0) return true;
-    if (!appletMainLoop()) return false;
+    if (!appletMainLoop()) {
+        s_app_exiting.store(true, std::memory_order_release);
+        return false;
+    }
 
     uint32_t target_w = 1280u, target_h = 720u;
     getTargetResolutionForMode(&target_w, &target_h);
@@ -2114,6 +2127,169 @@ static void drawFpsOverlay(RecompD3dPresenter *p, DkCmdBuf cmd, double fps, doub
     dkCmdBufDraw(cmd, DkPrimitive_Triangles, vtx_count, 1, 0, 0);
 }
 
+static constexpr int MOD_MENU_W = 820;
+static constexpr int MOD_MENU_H = 310;
+static uint32_t s_mod_menu_img[MOD_MENU_W * MOD_MENU_H];
+static int s_mod_menu_last_state = -1;
+
+static void rasterizeModMenuTekken3Style(bool unlock_all, int cursor, bool applied) {
+    auto fill_rect = [&](int rx, int ry, int rw, int rh, uint32_t color) {
+        int x1 = rx < 0 ? 0 : rx;
+        int y1 = ry < 0 ? 0 : ry;
+        int x2 = (rx + rw > MOD_MENU_W) ? MOD_MENU_W : (rx + rw);
+        int y2 = (ry + rh > MOD_MENU_H) ? MOD_MENU_H : (ry + rh);
+        for (int y = y1; y < y2; ++y) {
+            uint32_t *row = &s_mod_menu_img[y * MOD_MENU_W];
+            for (int x = x1; x < x2; ++x) row[x] = color;
+        }
+    };
+    auto draw_border = [&](int rx, int ry, int rw, int rh, uint32_t color, int thick) {
+        fill_rect(rx, ry, rw, thick, color);
+        fill_rect(rx, ry + rh - thick, rw, thick, color);
+        fill_rect(rx, ry, thick, rh, color);
+        fill_rect(rx + rw - thick, ry, thick, rh, color);
+    };
+    auto draw_char = [&](int x, int y, char c, uint32_t color, int scale) {
+        if (c < 32 || c > 126) c = '?';
+        const uint8_t *g = s_font8x8[(unsigned char)c - 32];
+        for (int r = 0; r < 8; ++r) {
+            uint8_t bits = g[r];
+            if (!bits) continue;
+            for (int col = 0; col < 8; ++col) {
+                if (!(bits & (1u << (7 - col)))) continue;
+                for (int dy = 0; dy < scale; ++dy) {
+                    int py = y + r * scale + dy;
+                    if (py < 0 || py >= MOD_MENU_H) continue;
+                    for (int dx = 0; dx < scale; ++dx) {
+                        int px = x + col * scale + dx;
+                        if (px < 0 || px >= MOD_MENU_W) continue;
+                        s_mod_menu_img[py * MOD_MENU_W + px] = color;
+                    }
+                }
+            }
+        }
+    };
+    auto draw_text = [&](int x, int y, const char *str, uint32_t color, int scale, bool shadow = true) {
+        int cx = x;
+        while (*str) {
+            if (shadow) draw_char(cx + scale, y + scale, *str, 0xFF000000u, scale);
+            draw_char(cx, y, *str, color, scale);
+            cx += 8 * scale;
+            ++str;
+        }
+    };
+
+    // Tekken 3 NX visual style: dark slate 93% opaque + cyan borders + gold header
+    fill_rect(0, 0, MOD_MENU_W, MOD_MENU_H, 0xEE121824u);
+    draw_border(0, 0, MOD_MENU_W, MOD_MENU_H, 0xFF00E5FFu, 3);
+    draw_border(4, 4, MOD_MENU_W - 8, MOD_MENU_H - 8, 0xFF005577u, 1);
+
+    // Header bar
+    fill_rect(6, 6, MOD_MENU_W - 12, 42, 0xFF1B2838u);
+    fill_rect(6, 48, MOD_MENU_W - 12, 2, 0xFF00E5FFu);
+    draw_text(170, 19, "SOULCALIBUR II NX - MOD MENU", 0xFFFFD700u, 2);
+
+    // Selected row highlight
+    const int row_y = 82;
+    if (cursor == 0) {
+        fill_rect(18, row_y - 8, MOD_MENU_W - 36, 36, 0xFF1E3A5Fu);
+        draw_border(18, row_y - 8, MOD_MENU_W - 36, 36, 0xFF00D4FFu, 1);
+    }
+
+    draw_text(34, row_y + 2, cursor == 0 ? "> Unlock All Content :" : "  Unlock All Content :",
+              cursor == 0 ? 0xFFFFFFFFu : 0xFFB0C4DEu, 2);
+    const char *val_str = unlock_all ? "< 1: ON (All 100%)  >" : "< 0: OFF (SaveFile) >";
+    draw_text(442, row_y + 2, val_str, unlock_all ? 0xFF55FF55u : 0xFF55FFFFu, 2);
+
+    // Status box
+    fill_rect(24, 146, MOD_MENU_W - 48, 1, 0xFF334455u);
+    const char *status_msg = unlock_all
+        ? (applied
+            ? "Status: Active! Characters, Weapons & all 18 Stages unlocked."
+            : "Status: Saved ON! Enter Title/Menus or restart to apply.")
+        : "Status: OFF (saved in sdmc:/switch/soulcalibur2/save/config.txt)";
+    fill_rect(26, 162, MOD_MENU_W - 52, 32, unlock_all ? 0xFF003322u : 0xFF161E2Eu);
+    draw_border(26, 162, MOD_MENU_W - 52, 32, unlock_all ? 0xFF00FF88u : 0xFF334455u, 1);
+    draw_text(40, 174, status_msg, unlock_all ? 0xFF00FFAAu : 0xFFB0C4DEu, 1);
+
+    // Footer separator & Minus-only 1s hold close hint
+    fill_rect(24, 214, MOD_MENU_W - 48, 1, 0xFF334455u);
+    draw_text(36, 232, "B Button / Left / Right: Toggle ON / OFF   |   Hold (-) 1s: Close", 0xFFAAAAAAu, 1);
+    draw_text(36, 256, "* NOTE: Unlock All applies automatically once the game reaches Title/Menus,", 0xFFFFB84Du, 1);
+    draw_text(36, 274, "  after loading your save file (characters, weapons and all 18 stages).", 0xFFFFB84Du, 1);
+}
+
+static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
+    if (p->current_slot < 0) return;
+
+    if (!p->mod_font_ready) {
+        DkImageLayoutMaker lm;
+        dkImageLayoutMakerDefaults(&lm, p->device);
+        lm.flags = DkImageFlags_Usage2DEngine;
+        lm.format = DkImageFormat_BGRA8_Unorm;
+        lm.dimensions[0] = MOD_MENU_W;
+        lm.dimensions[1] = MOD_MENU_H;
+
+        DkImageLayout layout;
+        dkImageLayoutInitialize(&layout, &lm);
+        uint64_t mem_size = dkImageLayoutGetSize(&layout);
+        uint32_t mem_align = dkImageLayoutGetAlignment(&layout);
+        if (mem_align < DK_MEMBLOCK_ALIGNMENT) mem_align = DK_MEMBLOCK_ALIGNMENT;
+        mem_size = (mem_size + mem_align - 1) & ~((uint64_t)mem_align - 1);
+
+        DkMemBlockMaker mm;
+        dkMemBlockMakerDefaults(&mm, p->device, mem_size);
+        mm.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+        p->mod_font_mem = dkMemBlockCreate(&mm);
+        if (!p->mod_font_mem) return;
+
+        dkImageInitialize(&p->mod_font_image, &layout, p->mod_font_mem, 0);
+        s_mod_menu_last_state = -1;
+        p->mod_font_ready = true;
+    }
+
+    DkImageView menu_view;
+    dkImageViewDefaults(&menu_view, &p->mod_font_image);
+
+    bool unlock_all = SwitchModMenu_GetUnlockAll();
+    int cursor = SwitchModMenu_GetCursor();
+    bool applied = SwitchModMenu_WasApplied();
+    int state_key = (unlock_all ? 1 : 0) | ((cursor & 3) << 1) | (applied ? 8 : 0);
+
+    if (state_key != s_mod_menu_last_state) {
+        const uint32_t tex_bytes = (uint32_t)(MOD_MENU_W * MOD_MENU_H * 4);
+        p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
+        if (p->dyn_offset + tex_bytes + 1024u <= DYN_BUF_SIZE) {
+            rasterizeModMenuTekken3Style(unlock_all, cursor, applied);
+
+            uint32_t slot = p->cur_cmd_slot;
+            uint32_t tex_off = p->dyn_offset;
+            p->dyn_offset += (tex_bytes + 255u) & ~255u;
+            memcpy((uint8_t*)p->dyn_cpu[slot] + tex_off, s_mod_menu_img, tex_bytes);
+            dkMemBlockFlushCpuCache(p->block_dyn[slot], tex_off, tex_bytes);
+
+            DkCopyBuf copySrc = { p->dyn_gpu[slot] + tex_off, 0u, 0u };
+            DkImageRect copyRect = { 0, 0, 0, (uint32_t)MOD_MENU_W, (uint32_t)MOD_MENU_H, 1 };
+            dkCmdBufCopyBufferToImage(cmd, &copySrc, &menu_view, &copyRect, 0);
+            dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+            s_mod_menu_last_state = state_key;
+        }
+    }
+
+    const float s = (float)p->height / 720.0f;
+    const uint32_t dst_w = (uint32_t)((float)MOD_MENU_W * s);
+    const uint32_t dst_h = (uint32_t)((float)MOD_MENU_H * s);
+    const uint32_t dst_x = (p->width > dst_w) ? (p->width - dst_w) / 2u : 0u;
+    const uint32_t dst_y = (p->height > dst_h) ? (p->height - dst_h) / 2u : 0u;
+
+    DkImageRect srcRect = { 0, 0, 0, (uint32_t)MOD_MENU_W, (uint32_t)MOD_MENU_H, 1 };
+    DkImageRect dstRect = { dst_x, dst_y, 0, dst_w, dst_h, 1 };
+    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+    dkCmdBufBlitImage(cmd, &menu_view, &srcRect, &p->framebuffer_views[p->current_slot], &dstRect,
+                      DkBlitFlag_FilterLinear | DkBlitFlag_ModeAlphaBlend, 0);
+    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+}
+
 struct StageDiagCounters {
     uint32_t nonblack_clear = 0;
     uint32_t last_clear_color = 0;
@@ -2183,6 +2359,8 @@ static uint32_t s_cur_clear_color = 0u;
 static uint32_t s_clears_in_frame = 0u;
 static uint32_t s_prev_draws_in_frame = 0u;
 
+static void Switch_PresentFrozenModMenuFrame(void);
+
 RecompD3dPresenterError d3d_backend_submit(
     RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command) {
     if (!presenter || !command) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
@@ -2242,8 +2420,8 @@ RecompD3dPresenterError d3d_backend_submit(
                 command->data.clear.stencil);
         }
 
-        if (presenter->query_count[slot] < MAX_GPU_QUERIES) {
-            uint32_t q = presenter->query_count[slot];
+        uint32_t q = presenter->query_count[slot];
+        if (q > 0 && q < MAX_GPU_QUERIES) {
             presenter->query_cats[slot][q - 1] = GPU_CAT_CLEAR;
             dkCmdBufReportCounter(cmd, DkCounter_Timestamp, presenter->queries_gpu[slot] + q * sizeof(GpuQueryReport));
             presenter->query_count[slot] = q + 1;
@@ -3119,8 +3297,8 @@ RecompD3dPresenterError d3d_backend_submit(
             cat = GPU_CAT_OPAQUE;
         }
 
-        if (presenter->query_count[slot] < MAX_GPU_QUERIES) {
-            uint32_t q = presenter->query_count[slot];
+        uint32_t q = presenter->query_count[slot];
+        if (q > 0 && q < MAX_GPU_QUERIES) {
             presenter->query_cats[slot][q - 1] = cat;
 
             GpuDrawMeta &meta = presenter->query_meta[slot][q - 1];
@@ -3276,12 +3454,24 @@ RecompD3dPresenterError d3d_backend_submit(
 
         if (Switch_IsFpsOverlayEnabled()) {
             drawFpsOverlay(presenter, cmd, s_overlay_fps, s_overlay_ms);
-            if (presenter->query_count[slot] < MAX_GPU_QUERIES) {
-                uint32_t q = presenter->query_count[slot];
+            uint32_t q = presenter->query_count[slot];
+            if (q > 0 && q < MAX_GPU_QUERIES) {
                 presenter->query_cats[slot][q - 1] = GPU_CAT_OVERLAY;
                 dkCmdBufReportCounter(cmd, DkCounter_Timestamp, presenter->queries_gpu[slot] + q * sizeof(GpuQueryReport));
                 presenter->query_count[slot] = q + 1;
             }
+        }
+
+        const bool opening_mod_menu = SwitchModMenu_IsOpen();
+        if (opening_mod_menu) {
+            DkImageRect full_rect = { 0, 0, 0, presenter->width, presenter->height, 1 };
+            dkCmdBufBindRenderTargets(cmd, nullptr, 0, nullptr);
+            dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+            dkCmdBufBlitImage(cmd, &presenter->framebuffer_views[presenter->current_slot], &full_rect,
+                              &presenter->backbuffer_snap_view, &full_rect,
+                              DkBlitFlag_FilterNearest, 0);
+            dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+            drawModMenuOverlay(presenter, cmd);
         }
 
         if (presenter->dyn_offset > 0) {
@@ -3299,6 +3489,20 @@ RecompD3dPresenterError d3d_backend_submit(
 
         presenter->frame_counter++;
         Switch_NotifyActivity(presenter->frame_counter);
+
+        if (opening_mod_menu) {
+            SwitchModMenu_ResetPauseState();
+            while (SwitchModMenu_IsOpen() && !Switch_IsAppExiting()) {
+                svcSleepThread(16000000ULL);
+                Switch_NotifyActivity(presenter->frame_counter);
+                if (SwitchModMenu_TickPause()) {
+                    Switch_PresentFrozenModMenuFrame();
+                }
+            }
+            // Restore clean frozen frame from backbuffer_snap_view without menu
+            Switch_PresentFrozenModMenuFrame();
+            SwitchModMenu_WaitReleaseOnExit();
+        }
         {
             static uint32_t s_total_pres_hitches = 0;
             uint64_t now = perfNow();
@@ -3582,6 +3786,39 @@ RecompD3dPresenterError d3d_backend_submit(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+static void Switch_PresentFrozenModMenuFrame(void) {
+    RecompD3dPresenter *p = s_active_deko_presenter;
+    if (!p || p->current_slot >= 0) return;
+    if (!beginFrameIfNeeded(p)) return;
+
+    uint32_t slot = p->cur_cmd_slot;
+    DkCmdBuf cmd = p->cmdbuf[slot];
+    dkCmdBufBindRenderTargets(cmd, nullptr, 0, nullptr);
+    DkImageRect full_rect = { 0, 0, 0, p->width, p->height, 1 };
+    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+    dkCmdBufBlitImage(cmd, &p->backbuffer_snap_view, &full_rect,
+                      &p->framebuffer_views[p->current_slot], &full_rect,
+                      DkBlitFlag_FilterNearest, 0);
+    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+    if (SwitchModMenu_IsOpen()) {
+        drawModMenuOverlay(p, cmd);
+    }
+    if (p->dyn_offset > 0) {
+        dkMemBlockFlushCpuCache(p->block_dyn[slot], 0, (p->dyn_offset + 255u) & ~255u);
+    }
+    dkCmdBufSignalFence(cmd, &p->slot_fences[slot], false);
+    p->slot_has_fence[slot] = true;
+    DkCmdList cmdList = dkCmdBufFinishList(cmd);
+    dkQueueSubmitCommands(p->queue, cmdList);
+    dkQueuePresentImage(p->queue, p->swapchain, p->current_slot);
+    p->last_presented_slot = p->current_slot;
+    p->current_slot = -1;
+    p->query_count[slot] = 0;
+    p->cur_cmd_slot = (slot + 1) % NUM_CMD_SLOTS;
+    p->frame_counter++;
+    Switch_NotifyActivity(p->frame_counter);
+}
+
 RecompD3dPresenterError d3d_backend_draw_coverage(
     RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand *draw, bool *covered) {
     if (!presenter || !draw || !covered) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
@@ -3658,6 +3895,7 @@ RecompD3dPresenterError d3d_backend_destroy(RecompD3dPresenter **presenter) {
         if (p->block_dyn[i]) dkMemBlockDestroy(p->block_dyn[i]);
         if (p->block_cmd[i]) dkMemBlockDestroy(p->block_cmd[i]);
     }
+    if (p->mod_font_mem) dkMemBlockDestroy(p->mod_font_mem);
     if (p->block_queries) dkMemBlockDestroy(p->block_queries);
     if (p->block_tex) dkMemBlockDestroy(p->block_tex);
     if (p->block_desc) dkMemBlockDestroy(p->block_desc);
