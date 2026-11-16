@@ -1,4 +1,4 @@
-import { DiscParsers } from "./xiso.js?v=20261115b";
+import { DiscParsers } from "./xiso.js?v=20261115m";
 import { downloadZip } from "https://cdn.jsdelivr.net/npm/client-zip@2.4.5/+esm";
 
 const REPO_OWNER = "markaurel13";
@@ -150,8 +150,13 @@ async function handleXboxInput(fileList) {
         : null;
       if (entry) foundCount++;
     }
-    if (foundCount === 0) {
-      log("Default.xbe / root.olk / movie.afs / bgm.afs were not found inside the ISO.", "error");
+    if (foundCount < 4) {
+      log(
+        foundCount === 0
+          ? "Default.xbe / root.olk / movie.afs / bgm.afs were not found inside the ISO."
+          : "This Xbox ISO is missing required Soulcalibur II files (Default.xbe, root.olk, movie.afs, bgm.afs).",
+        "error"
+      );
     } else {
       const xbeEntry = entries["default.xbe"];
       if (xbeEntry) {

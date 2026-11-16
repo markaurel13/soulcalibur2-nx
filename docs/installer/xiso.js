@@ -166,6 +166,9 @@ export const DiscParsers = (() => {
       throw new Error("Invalid GameCube header (magic != 0xC2339F3D).");
     }
     const gameId = decodeAscii(new Uint8Array(hdrBuf, 0, 6));
+    if (!gameId.startsWith("GRS")) {
+      throw new Error(`Not a Soulcalibur II GameCube ISO (got game ID '${gameId}').`);
+    }
     if (gameId !== "GRSEAF") {
       throw new Error(`Only USA (NTSC-U) GameCube copies are supported (expected GRSEAF, got '${gameId}').`);
     }
