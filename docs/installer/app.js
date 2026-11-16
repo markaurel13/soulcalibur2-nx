@@ -280,85 +280,48 @@ async function buildGuestsIfNeeded() {
   if (!hasGc && !hasPs2) return null;
   if (state.guestsBlob) return state.guestsBlob;
 
-  setProgress(10, "Loading Python runtime (Pyodide) for Link / Heihachi...");
-  log("Initializing Pyodide in browser to build guests.olk...");
+  setProgress(10, "Fetching conversion scripts (tools/guests)...");
+  log("Initializing Pyodide worker to build guests.olk (streaming, low-RAM)...");
 
-  if (!state.pyodide) {
-    if (!window.loadPyodide) {
-      await new Promise((resolve, reject) => {
-        const s = document.createElement("script");
-        s.src = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js";
-        s.onload = resolve;
-        s.onerror = () => reject(new Error("Failed to load Pyodide from CDN."));
-        document.head.appendChild(s);
-      });
-    }
-    state.pyodide = await window.loadPyodide();
-  }
+  const pyFiles = {};
+  await Promise.all(
+    GUEST_PY_FILES.map(async (f) => {
+      pyFiles[f] = await fetchGuestScript(f);
+    })
+  );
 
-  const py = state.pyodide;
-  py.FS.mkdirTree("/work/scripts");
-  py.FS.mkdirTree("/work/xb");
-  py.FS.mkdirTree("/work/gc");
-  py.FS.mkdirTree("/work/ps2");
+  const guestsBlob = await new Promise((resolve, reject) => {
+    const worker = new Worker("./installer/guest_worker.js?v=20261115c");
+    worker.onmessage = (ev) => {
+      const msg = ev.data;
+      if (msg.type === "progress") {
+        setProgress(msg.pct, msg.label);
+      } else if (msg.type === "log") {
+        log(msg.msg, msg.level || "info");
+      } else if (msg.type === "done") {
+        worker.terminate();
+        resolve(msg.guestsBlob);
+      } else if (msg.type === "error") {
+        worker.terminate();
+        reject(new Error(msg.message));
+      }
+    };
+    worker.onerror = (err) => {
+      worker.terminate();
+      reject(new Error(err.message || "Guest builder worker failed."));
+    };
+    worker.postMessage({
+      xbRoot: state.xbox["root.olk"].blob,
+      gcRoot: hasGc ? state.gc["root.olk"].blob : null,
+      gcDol: hasGc ? state.gc["boot.dol"].blob : null,
+      ps2Root: hasPs2 ? state.ps2["root.olk"].blob : null,
+      ps2Elf: hasPs2 ? state.ps2["slus_206.43"].blob : null,
+      pyFiles,
+    });
+  });
 
-  setProgress(25, "Loading conversion scripts (tools/guests)...");
-  for (const f of GUEST_PY_FILES) {
-    const code = await fetchGuestScript(f);
-    py.FS.writeFile(`/work/scripts/${f}`, code);
-  }
-
-  setProgress(40, "Staging disc files into temporary workspace...");
-  py.FS.writeFile("/work/xb/root.olk", new Uint8Array(await state.xbox["root.olk"].blob.arrayBuffer()));
-
-  const args = ["/work/xb/root.olk"];
-  if (hasGc) {
-    py.FS.writeFile("/work/gc/root.olk", new Uint8Array(await state.gc["root.olk"].blob.arrayBuffer()));
-    py.FS.writeFile("/work/gc/boot.dol", new Uint8Array(await state.gc["boot.dol"].blob.arrayBuffer()));
-    args.push("--gamecube", "/work/gc/root.olk");
-  }
-  if (hasPs2) {
-    py.FS.writeFile("/work/ps2/root.olk", new Uint8Array(await state.ps2["root.olk"].blob.arrayBuffer()));
-    py.FS.writeFile("/work/ps2/SLUS_206.43", new Uint8Array(await state.ps2["slus_206.43"].blob.arrayBuffer()));
-    args.push("--ps2", "/work/ps2/root.olk");
-  }
-  args.push("/work/guests.olk");
-
-  setProgress(60, "Building guests.olk (Link / Heihachi)...");
-  log(`Running roster.py (${hasGc ? "Link " : ""}${hasPs2 ? "Heihachi" : ""})...`);
-
-  await py.runPythonAsync(`
-import sys
-sys.path.insert(0, "/work/scripts")
-import olnk
-import roster
-olnk.Olnk.open = classmethod(lambda cls, path: cls(open(path, "rb").read()))
-roster.build_roster(
-  "/work/xb/root.olk",
-  ${hasGc ? '"/work/gc/root.olk"' : "None"},
-  ${hasPs2 ? '"/work/ps2/root.olk"' : "None"},
-  "/work/guests.olk"
-)
-`);
-
-  const outBytes = py.FS.readFile("/work/guests.olk");
-  state.guestsBlob = new Blob([outBytes], { type: "application/octet-stream" });
+  state.guestsBlob = guestsBlob;
   log(`guests.olk built successfully (${formatBytes(state.guestsBlob.size)}).`, "ok");
-
-  // Clean up Pyodide VFS to release RAM
-  for (const p of [
-    "/work/xb/root.olk",
-    "/work/gc/root.olk",
-    "/work/gc/boot.dol",
-    "/work/ps2/root.olk",
-    "/work/ps2/SLUS_206.43",
-    "/work/guests.olk",
-  ]) {
-    try {
-      py.FS.unlink(p);
-    } catch (_) {}
-  }
-
   return state.guestsBlob;
 }
 
