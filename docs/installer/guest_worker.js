@@ -508,6 +508,202 @@ self.onmessage = async (ev) => {
       return pixels;
     };
 
+    // ---- PS2 GS Memory & ps2tex V8 JIT accelerators ----
+    const GS_BLOCK32 = [
+      [0, 1, 4, 5, 16, 17, 20, 21],
+      [2, 3, 6, 7, 18, 19, 22, 23],
+      [8, 9, 12, 13, 24, 25, 28, 29],
+      [10, 11, 14, 15, 26, 27, 30, 31],
+    ];
+    const GS_BLOCK4 = [
+      [0, 2, 8, 10], [1, 3, 9, 11], [4, 6, 12, 14], [5, 7, 13, 15],
+      [16, 18, 24, 26], [17, 19, 25, 27], [20, 22, 28, 30], [21, 23, 29, 31],
+    ];
+    const GS_COLUMN32 = [
+      [0, 1, 4, 5, 8, 9, 12, 13],
+      [2, 3, 6, 7, 10, 11, 14, 15],
+      [16, 17, 20, 21, 24, 25, 28, 29],
+      [18, 19, 22, 23, 26, 27, 30, 31],
+      [32, 33, 36, 37, 40, 41, 44, 45],
+      [34, 35, 38, 39, 42, 43, 46, 47],
+      [48, 49, 52, 53, 56, 57, 60, 61],
+      [50, 51, 54, 55, 58, 59, 62, 63],
+    ];
+    const GS_COL8_BASE = [
+      [0, 4, 16, 20, 32, 36, 48, 52, 2, 6, 18, 22, 34, 38, 50, 54],
+      [8, 12, 24, 28, 40, 44, 56, 60, 10, 14, 26, 30, 42, 46, 58, 62],
+      [33, 37, 1, 5, 49, 53, 17, 21, 35, 39, 3, 7, 51, 55, 19, 23],
+      [41, 45, 9, 13, 57, 61, 25, 29, 43, 47, 11, 15, 59, 63, 27, 31],
+      [96, 100, 112, 116, 64, 68, 80, 84, 98, 102, 114, 118, 66, 70, 82, 86],
+      [104, 108, 120, 124, 72, 76, 88, 92, 106, 110, 122, 126, 74, 78, 90, 94],
+      [65, 69, 81, 85, 97, 101, 113, 117, 67, 71, 83, 87, 99, 103, 115, 119],
+      [73, 77, 89, 93, 105, 109, 121, 125, 75, 79, 91, 95, 107, 111, 123, 127],
+    ];
+    const GS_COLUMN8 = GS_COL8_BASE.concat(GS_COL8_BASE.map((r) => r.map((b) => b + 128)));
+    const GS_COLUMN4 = (() => {
+      const pair = (starts, steps) => {
+        const row = [];
+        for (const s of starts) for (const k of steps) row.push(s + k);
+        return [row, row.map((n) => n + 16)];
+      };
+      const c0 = pair([0, 2, 4, 6], [0, 8, 32, 40, 64, 72, 96, 104]).concat(
+        pair([1, 3, 5, 7], [64, 72, 96, 104, 0, 8, 32, 40])
+      );
+      const c1 = c0.map((row) => row.map((n) => (n ^ 64) + 128));
+      const rows = c0.concat(c1);
+      return rows.concat(rows.map((r) => r.map((n) => n + 256)));
+    })();
+
+    const gsMems = [];
+    self.__gsAlloc = () => {
+      const id = gsMems.length;
+      gsMems.push(new Uint8Array(4 << 20));
+      return id;
+    };
+
+    self.__gsUpload = (id, psm, bp, bw, x0, y0, w, h, pixelsProxy) => {
+      const d = gsMems[id];
+      const buf = pixelsProxy.getBuffer("u8");
+      try {
+        const src = buf.data;
+        const size = psm === 0 ? w * h * 4 : psm === 0x13 ? w * h : (w * h + 1) >> 1;
+        let i = 0;
+        if (psm === 0) {
+          for (let y = y0; y < y0 + h; y++) {
+            const pageY = (y >> 5) * bw;
+            const bRow = GS_BLOCK32[(y >> 3) & 3];
+            const cRow = GS_COLUMN32[y & 7];
+            for (let x = x0; x < x0 + w; x++) {
+              const block = bp + (pageY + (x >> 6)) * 32 + bRow[(x >> 3) & 7];
+              const a = ((block * 64 + cRow[x & 7]) & 0xfffff) * 4;
+              if (i + 3 < src.length && i < size) {
+                d[a] = src[i]; d[a + 1] = src[i + 1]; d[a + 2] = src[i + 2]; d[a + 3] = src[i + 3];
+              } else {
+                d[a] = i < src.length && i < size ? src[i] : 0;
+                d[a + 1] = i + 1 < src.length && i + 1 < size ? src[i + 1] : 0;
+                d[a + 2] = i + 2 < src.length && i + 2 < size ? src[i + 2] : 0;
+                d[a + 3] = i + 3 < src.length && i + 3 < size ? src[i + 3] : 0;
+              }
+              i += 4;
+            }
+          }
+        } else if (psm === 0x13) {
+          const bwHalf = bw >> 1;
+          for (let y = y0; y < y0 + h; y++) {
+            const pageY = (y >> 6) * bwHalf;
+            const bRow = GS_BLOCK32[(y >> 4) & 3];
+            const cRow = GS_COLUMN8[y & 15];
+            for (let x = x0; x < x0 + w; x++) {
+              const block = bp + (pageY + (x >> 7)) * 32 + bRow[(x >> 4) & 7];
+              const a = (block * 256 + cRow[x & 15]) & 0x3fffff;
+              d[a] = i < src.length && i < size ? src[i] : 0;
+              i++;
+            }
+          }
+        } else if (psm === 0x14) {
+          const bwHalf = bw >> 1;
+          for (let y = y0; y < y0 + h; y++) {
+            const pageY = (y >> 7) * bwHalf;
+            const bRow = GS_BLOCK4[(y >> 4) & 7];
+            const cRow = GS_COLUMN4[y & 15];
+            for (let x = x0; x < x0 + w; x++) {
+              const byteIdx = i >> 1;
+              const srcByte = byteIdx < src.length && byteIdx < size ? src[byteIdx] : 0;
+              const v = (srcByte >> (4 * (i & 1))) & 15;
+              const block = bp + (pageY + (x >> 7)) * 32 + bRow[(x >> 5) & 3];
+              const n = (block * 512 + cRow[x & 31]) & 0x7fffff;
+              const dByte = n >> 1;
+              const shift = 4 * (n & 1);
+              d[dByte] = (d[dByte] & (0xf0 >> shift)) | (v << shift);
+              i++;
+            }
+          }
+        }
+      } finally {
+        buf.release();
+      }
+    };
+
+    self.__gsRead32 = (id, bp, bw, w, h) => {
+      const d = gsMems[id];
+      const out = new Uint8Array(w * h * 4);
+      let dst = 0;
+      for (let y = 0; y < h; y++) {
+        const pageY = (y >> 5) * bw;
+        const bRow = GS_BLOCK32[(y >> 3) & 3];
+        const cRow = GS_COLUMN32[y & 7];
+        for (let x = 0; x < w; x++) {
+          const block = bp + (pageY + (x >> 6)) * 32 + bRow[(x >> 3) & 7];
+          const a = ((block * 64 + cRow[x & 7]) & 0xfffff) * 4;
+          out[dst++] = d[a]; out[dst++] = d[a + 1]; out[dst++] = d[a + 2]; out[dst++] = d[a + 3];
+        }
+      }
+      return out;
+    };
+
+    self.__gsRead8 = (id, bp, bw, w, h) => {
+      const d = gsMems[id];
+      const out = new Uint8Array(w * h);
+      const bwHalf = bw >> 1;
+      let dst = 0;
+      for (let y = 0; y < h; y++) {
+        const pageY = (y >> 6) * bwHalf;
+        const bRow = GS_BLOCK32[(y >> 4) & 3];
+        const cRow = GS_COLUMN8[y & 15];
+        for (let x = 0; x < w; x++) {
+          const block = bp + (pageY + (x >> 7)) * 32 + bRow[(x >> 4) & 7];
+          out[dst++] = d[(block * 256 + cRow[x & 15]) & 0x3fffff];
+        }
+      }
+      return out;
+    };
+
+    self.__gsRead4 = (id, bp, bw, w, h) => {
+      const d = gsMems[id];
+      const out = new Uint8Array(w * h);
+      const bwHalf = bw >> 1;
+      let dst = 0;
+      for (let y = 0; y < h; y++) {
+        const pageY = (y >> 7) * bwHalf;
+        const bRow = GS_BLOCK4[(y >> 4) & 7];
+        const cRow = GS_COLUMN4[y & 15];
+        for (let x = 0; x < w; x++) {
+          const block = bp + (pageY + (x >> 7)) * 32 + bRow[(x >> 5) & 3];
+          const n = (block * 512 + cRow[x & 31]) & 0x7fffff;
+          out[dst++] = (d[n >> 1] >> (4 * (n & 1))) & 15;
+        }
+      }
+      return out;
+    };
+
+    self.__ps2RawToSwizzledBgra = (rawProxy, storedW, width, height, sw, sh) => {
+      const buf = rawProxy.getBuffer("u8");
+      try {
+        const raw = buf.data;
+        const pixels = new Uint8Array(sw * sh * 4);
+        for (let y = 0; y < height; y++) {
+          const rowBase = y * storedW * 4;
+          for (let x = 0; x < width; x++) {
+            const p = rowBase + x * 4;
+            let swz = 0, bit = 0, xx = x, yy = y, ww = sw, hh = sh;
+            while (ww > 1 || hh > 1) {
+              if (ww > 1) { swz |= (xx & 1) << bit++; xx >>= 1; ww >>= 1; }
+              if (hh > 1) { swz |= (yy & 1) << bit++; yy >>= 1; hh >>= 1; }
+            }
+            const dst = swz * 4;
+            pixels[dst] = raw[p + 2];
+            pixels[dst + 1] = raw[p + 1];
+            pixels[dst + 2] = raw[p];
+            const a = raw[p + 3] * 2;
+            pixels[dst + 3] = a > 255 ? 255 : a;
+          }
+        }
+        return pixels;
+      } finally {
+        buf.release();
+      }
+    };
+
     postProgress(35, "Building guests.olk (Link & Heihachi)...");
     postLog("Running roster.py (streaming Blob-backed Olnk + JS JIT accelerators)...");
 
@@ -516,17 +712,61 @@ import sys, struct, builtins
 import js
 sys.path.insert(0, "/work/scripts")
 import olnk
+import gs
+import ps2tex
 import sound
 import textures
 import vmp2vmx
 import build_guest
 import roster
 
+class _FastGsMemory(gs.Memory):
+    def __init__(self):
+        self._id = int(js.__gsAlloc())
+    def upload32(self, bp, bw, x0, y0, w, h, pixels):
+        js.__gsUpload(self._id, 0, bp, bw, x0, y0, w, h, pixels)
+    def upload(self, psm, bp, bw, x0, y0, w, h, pixels):
+        js.__gsUpload(self._id, psm, bp, bw, x0, y0, w, h, pixels)
+    def read32(self, bp, bw, w, h):
+        return bytes(js.__gsRead32(self._id, bp, bw, w, h).to_py())
+    def read8(self, bp, bw, w, h):
+        return bytes(js.__gsRead8(self._id, bp, bw, w, h).to_py())
+    def read4(self, bp, bw, w, h):
+        return bytes(js.__gsRead4(self._id, bp, bw, w, h).to_py())
+
+gs.Memory = _FastGsMemory
+ps2tex.gs.Memory = _FastGsMemory
+
+class _FastPs2RgbaRows:
+    def __init__(self, raw, sw, w, h):
+        self.raw = raw
+        self.sw = sw
+        self.w = w
+        self.h = h
+    def __len__(self):
+        return self.h
+    def __getitem__(self, y):
+        raw, sw, w = self.raw, self.sw, self.w
+        base = y * sw * 4
+        return [(raw[base + 4 * x], raw[base + 4 * x + 1], raw[base + 4 * x + 2], min(255, raw[base + 4 * x + 3] * 2)) for x in range(w)]
+
+_orig_ps2tex_rows = ps2tex.Texture.rows
+def _fast_ps2tex_rows(self):
+    if self.psm == 0:
+        sw, sh = self.stored
+        raw = self.memory.read32(self.tbp, self.tbw, sw, sh)
+        return _FastPs2RgbaRows(raw, sw, self.width, self.height)
+    return _orig_ps2tex_rows(self)
+
+ps2tex.Texture.rows = _fast_ps2tex_rows
+
 sound.dsp_decode = lambda data, coefs, samples: js.__dspDecode(data, coefs, samples)
 sound.ps_adpcm_decode = lambda data: js.__psAdpcmDecode(data)
 sound.xbox_encode = lambda samples: bytes(js.__xboxEncode(samples).to_py())
 
 def _fast_vmp_dxt(rows, width, height):
+    if isinstance(rows, _FastPs2RgbaRows):
+        rows = [rows[y] for y in range(rows.h)]
     res = js.__encodeRgbaRowsToDxt(rows, width, height)
     return int(res[0]), bytes(res[1].to_py())
 
@@ -540,7 +780,10 @@ def _fast_rgba8_bank(images):
     entries_b, data_b = bytearray(), bytearray()
     for entry_flags, width, height, rows in images:
         sw, sh = 1 << (width - 1).bit_length(), 1 << (height - 1).bit_length()
-        pixels = bytes(js.__swizzleRgba8Rows(rows, width, height, sw, sh).to_py())
+        if isinstance(rows, _FastPs2RgbaRows):
+            pixels = bytes(js.__ps2RawToSwizzledBgra(rows.raw, rows.sw, width, height, sw, sh).to_py())
+        else:
+            pixels = bytes(js.__swizzleRgba8Rows(rows, width, height, sw, sh).to_py())
         entries_b += struct.pack("<9I", entry_flags, 0, height << 16 | width, data_at + len(data_b), textures.D3D_A8R8G8B8,
                                  sh << 16 | sw, 1, 0, 0)
         data_b += pixels

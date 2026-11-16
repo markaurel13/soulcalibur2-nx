@@ -309,7 +309,7 @@ async function buildGuestsIfNeeded() {
   );
 
   const guestsBlob = await new Promise((resolve, reject) => {
-    const worker = new Worker("./installer/guest_worker.js?v=20261115j");
+    const worker = new Worker("./installer/guest_worker.js?v=20261115n");
     worker.onmessage = (ev) => {
       const msg = ev.data;
       if (msg.type === "progress") {
