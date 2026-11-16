@@ -29,13 +29,17 @@ Unlike traditional emulation, the original game runs natively on Nintendo Switch
 
 ## 📁 Installation (Nintendo Switch)
 
-1. Download the latest `soulcalibur2.nro` from the [Releases](https://github.com/markaurel13/soulcalibur2-nx/releases) page.
-2. Create the `/switch/soulcalibur2/` folder on your Nintendo Switch microSD card (`sdmc:/`) and place `soulcalibur2.nro` inside.
-3. Copy your own legal **Soulcalibur II (Xbox NTSC-U)** game files into `sdmc:/switch/soulcalibur2/`:
-   - `Default.xbe`
-   - `root.olk`
-   - `movie.afs`
-   - `bgm.afs`
+1. **Prepare Game Assets (Web Installer):**
+   - Open the **[Soulcalibur II NX Web Installer](https://markaurel13.github.io/soulcalibur2-nx/)** in your browser (runs 100% locally—no Python, Java, or extra tools required).
+   - Drop your own legal **USA (NTSC-U)** copies of all three discs:
+     - **Xbox** (`.iso` / `.xiso`) — Base game + Spawn
+     - **GameCube** (`.iso` / `.gcm` / `.ciso` / `.nkit.iso`) — Extracts Link
+     - **PlayStation 2** (`.iso`) — Extracts Heihachi
+   - Click **Build Switch Package** to generate `soulcalibur2_nx_package.zip` (~1.34 GB) and extract it to the root of your Nintendo Switch microSD card (`sdmc:/`).
+
+2. **Install the Latest `soulcalibur2.nro`:**
+   - Go to the **[Releases](https://github.com/markaurel13/soulcalibur2-nx/releases)** page and download the latest `soulcalibur2.nro`.
+   - Copy `soulcalibur2.nro` into `sdmc:/switch/soulcalibur2/`.
 
 Your microSD card directory structure should look like this:
 
@@ -43,16 +47,16 @@ Your microSD card directory structure should look like this:
 sdmc:/
 └── switch/
     └── soulcalibur2/
-        ├── soulcalibur2.nro        # Nintendo Switch native executable (from Releases)
+        ├── soulcalibur2.nro        # Latest Nintendo Switch executable (from Releases)
         ├── Default.xbe             # Original Xbox executable
-        ├── root.olk                # Game assets archive
+        ├── guests.olk              # Combined game assets + Link & Heihachi (from Web Installer)
         ├── movie.afs               # FMV cutscenes
         ├── bgm.afs                 # Background music
         └── save/                   # Auto-created for save data
 ```
 
 > [!TIP]
-> You can also place `Default.xbe`, `root.olk`, `movie.afs`, and `bgm.afs` inside `sdmc:/switch/soulcalibur2/disc/` if you prefer keeping assets in a subfolder.
+> Launch **Soulcalibur II NX** from the Homebrew Menu using **title override** (hold `R` while launching a game) for full RAM access.
 
 ---
 
