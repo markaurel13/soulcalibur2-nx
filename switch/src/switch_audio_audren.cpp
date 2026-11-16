@@ -59,7 +59,7 @@ static std::atomic<int> s_audio_muted(0);
 static std::atomic<int> s_audio_paused(0);
 static uint64_t s_submit_counter = 0;
 static uint64_t s_wavebuf_counter = 0;
-static float s_final_mix_vol = 0.65f;
+static float s_final_mix_vol = 0.55f;
 
 // ---- Diagnostic counters (read by the Deko3D presenter's periodic perf report) ----
 static uint64_t s_perf_update_ticks = 0, s_perf_submit_ticks = 0, s_perf_flush_ticks = 0;
@@ -496,7 +496,7 @@ static void flushAudioInternal(void) {
     if (rms_gain > s_adiag.peak_rms_gain) s_adiag.peak_rms_gain = rms_gain;
     // Volumen maestro fijo a 0.65f (sin ducking dinamico) para evitar que picos
     // de suma >1.0 disparen el limitador/DRC de salida y mantenga volumen constante.
-    s_final_mix_vol = 0.65f;
+    s_final_mix_vol = 0.55f;
     if (s_final_mix_vol < s_adiag.min_final_mix) s_adiag.min_final_mix = s_final_mix_vol;
     if (s_final_mix_vol > s_adiag.max_final_mix) s_adiag.max_final_mix = s_final_mix_vol;
     audrvMixSetVolume(&s_drv, AUDREN_FINAL_MIX_ID, s_final_mix_vol);
@@ -861,15 +861,29 @@ void recomp_audio_output_submit(
                 int32_t jl = std::abs((int32_t)first_l - (int32_t)v.prev_sample_l);
                 int32_t jr = std::abs((int32_t)first_r - (int32_t)v.prev_sample_r);
                 int32_t j = std::max(jl, jr);
+                double vgap = v.last_submit_tick ? (double)(armGetSystemTick() - v.last_submit_tick) / 19200.0 : 0.0;
                 if (j > s_adiag.max_pcm_jump) s_adiag.max_pcm_jump = j;
                 if (j > 12000) {
                     ++s_adiag.pcm_jumps;
                     if (s_adiag.detail_printed < 10u) {
                         ++s_adiag.detail_printed;
-                        double vgap = v.last_submit_tick ? (double)(armGetSystemTick() - v.last_submit_tick) / 19200.0 : 0.0;
                         printf("[AudioJump] slot=%u hw=%d jmp=%d (%d->%d) gap=%.1fms wbs=%d stg=%u rate=%u\n",
                                slot, hw_idx, j, (int)v.prev_sample_l, (int)first_l, vgap,
                                countActiveWavebufs(v), v.staging_frames, sample_rate);
+                    }
+                }
+                // De-click only after real submit gaps (> 5ms) with a tiny 8-sample ramp
+                // so continuous 40-sample bursts (gap=0..2.8ms) keep their sharp transient.
+                if (vgap > 5.0 && j > 1500) {
+                    uint32_t ramp = std::min(8u, chunk_frames);
+                    for (uint32_t f = 0; f < ramp; ++f) {
+                        float a = (float)(f + 1u) / (float)(ramp + 1u);
+                        int32_t l = (int32_t)std::lround((float)v.prev_sample_l * (1.0f - a) + (float)dst[f * dst_ch + 0] * a);
+                        dst[f * dst_ch + 0] = (int16_t)std::clamp(l, -32768, 32767);
+                        if (dst_ch >= 2) {
+                            int32_t r = (int32_t)std::lround((float)v.prev_sample_r * (1.0f - a) + (float)dst[f * dst_ch + 1] * a);
+                            dst[f * dst_ch + 1] = (int16_t)std::clamp(r, -32768, 32767);
+                        }
                     }
                 }
             }
@@ -899,7 +913,7 @@ void recomp_audio_output_submit(
         uint32_t low_q_frames = std::max(64u, v.sample_rate / 250u);       // ~4ms
         if (active_wbs == 0 ||
             (active_wbs == 1 && v.staging_frames >= low_q_frames) ||
-            v.staging_frames >= min_coalesce_frames) {
+            (active_wbs < 4 && v.staging_frames >= min_coalesce_frames)) {
             commitVoiceStaging(hw_idx);
         }
     }
