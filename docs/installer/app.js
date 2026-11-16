@@ -235,8 +235,20 @@ async function handlePs2Input(fileList) {
   log(`Reading PS2 ISO '${file.name}'...`);
   try {
     const entries = await DiscParsers.parsePs2Iso(file);
-    if (!entries["root.olk"] || !entries["slus_206.43"]) {
-      throw new Error("Only USA (NTSC-U) PS2 copies are supported (ROOT.OLK or SLUS_206.43 not found).");
+    if (entries["default.xbe"]) {
+      throw new Error("This looks like an Xbox ISO, not a PlayStation 2 ISO.");
+    }
+    if (!entries["root.olk"]) {
+      throw new Error("Not a valid Soulcalibur II PS2 ISO (ROOT.OLK not found).");
+    }
+    if (!entries["slus_206.43"]) {
+      const hasPs2Boot = Object.keys(entries).some((k) =>
+        /^(sles|slpm|slps|sces|scps|scus)_/.test(k) || k === "system.cnf"
+      );
+      if (hasPs2Boot) {
+        throw new Error("Only USA (NTSC-U) PS2 copies are supported (SLUS_206.43 not found).");
+      }
+      throw new Error("Not a valid Soulcalibur II PS2 ISO (SLUS_206.43 not found).");
     }
     state.ps2["root.olk"] = {
       name: "root.olk",
