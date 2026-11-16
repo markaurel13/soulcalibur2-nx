@@ -5,6 +5,7 @@
 #include "input_model.h"
 
 #ifdef SWITCH_PGO_GENERATE
+#include <sys/stat.h>
 extern "C" void __gcov_dump(void);
 #endif
 
@@ -96,14 +97,17 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
             }
         }
 #ifdef SWITCH_PGO_GENERATE
-        // ZL + ZR + Plus: Dump PGO .gcda files to SD while in-game
+        // R3 (StickR): Dump PGO .gcda files to SD while in-game
         static uint64_t s_last_pgo_dump_tick = 0;
         if (now_tick - s_last_pgo_dump_tick > 38400000ULL) { // 2.0s debounce
-            if ((kHeld & HidNpadButton_ZL) && (kHeld & HidNpadButton_ZR) && (kHeld & HidNpadButton_Plus)) {
+            if (kHeld & HidNpadButton_StickR) {
                 s_last_pgo_dump_tick = now_tick;
+                mkdir(SWITCH_PGO_OUT_DIR, 0777);
                 printf("[PGO] Volcando perfil .gcda a %s...\n", SWITCH_PGO_OUT_DIR);
+                fflush(stdout);
                 __gcov_dump();
                 printf("[PGO] Volcado completado.\n");
+                fflush(stdout);
             }
         }
 #endif

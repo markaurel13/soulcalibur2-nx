@@ -39,6 +39,7 @@ if(SC2_PGO_GENERATE)
     list(APPEND _SC2_PGO_COMPILE_FLAGS
         "-fprofile-generate=${SC2_PGO_OUT_DIR}"
         "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+        "-fno-profile-values"
         "-Wno-coverage-mismatch"
     )
     list(APPEND _SC2_PGO_LINK_FLAGS
@@ -142,7 +143,6 @@ add_compile_options(
     -ftree-vectorize
     -fomit-frame-pointer
     $<$<AND:$<BOOL:${SC2_ENABLE_LTO}>,$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>>:-flto=4>
-    ${_SC2_PGO_COMPILE_FLAGS}
     -Wall
     -Wno-unused-variable
     -Wno-unused-label
@@ -341,6 +341,23 @@ set_source_files_properties(
     src/switch_profiler.cpp
     PROPERTIES COMPILE_OPTIONS "-fno-lto"
 )
+
+if(_SC2_PGO_COMPILE_FLAGS)
+    set_source_files_properties(
+        src/switch_sub_23c30.c
+        src/switch_sub_24720.c
+        src/switch_sub_240c0.c
+        src/switch_sub_4b630.c
+        src/switch_sub_69370.c
+        src/switch_sub_61b10.c
+        src/switch_sub_7ca00.c
+        src/switch_sub_843d0.c
+        src/switch_sub_hot.c
+        src/switch_d3d8_draw_adapter.c
+        src/switch_math_neon.c
+        PROPERTIES COMPILE_OPTIONS "${_SC2_PGO_COMPILE_FLAGS}"
+    )
+endif()
 
 target_link_options(soulcalibur2
     PRIVATE
