@@ -52,7 +52,6 @@ sdmc:/
         ├── guests.olk              # Combined game assets + Link & Heihachi (from Web Installer)
         ├── movie.afs               # FMV cutscenes
         ├── bgm.afs                 # Background music
-        └── save/                   # Auto-created for save data
 ```
 
 > [!TIP]
