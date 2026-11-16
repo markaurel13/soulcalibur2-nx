@@ -38,16 +38,19 @@
       inset: 0;
       pointer-events: none;
       z-index: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
       overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(8, 10, 16, 0.72) 0%, rgba(8, 10, 16, 0.82) 55%, rgba(8, 10, 16, 0.92) 100%),
+        radial-gradient(circle at 50% 25%, rgba(245, 196, 81, 0.10) 0%, transparent 60%);
     }
-    .bg-watermark svg {
-      width: min(92vw, 980px);
-      height: auto;
-      opacity: 0.055;
-      filter: drop-shadow(0 0 40px rgba(245, 196, 81, 0.25));
+    .bg-watermark::before {
+      content: "";
+      position: absolute;
+      inset: -24px;
+      background: url("./screenshots/link-vs-heihachi.jpg") center center / cover no-repeat;
+      filter: blur(4px) saturate(1.15);
+      opacity: 0.34;
+      z-index: -1;
     }
     .container { max-width: 860px; margin: 0 auto; position: relative; z-index: 1; }
     header { text-align: center; margin-bottom: 28px; }
@@ -194,17 +197,7 @@
   </style>
 </head>
 <body>
-  <div class="bg-watermark" aria-hidden="true">
-    <svg viewBox="0 0 800 500" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <!-- Crossed Soul Blades & Crest Watermark -->
-      <circle cx="400" cy="240" r="175" stroke="#f5c451" stroke-width="3" stroke-dasharray="14 8" />
-      <circle cx="400" cy="240" r="145" stroke="#e60012" stroke-width="2" />
-      <path d="M165 405 L615 75 L635 95 L185 425 Z" fill="#f5c451" />
-      <path d="M635 405 L185 75 L165 95 L615 425 Z" fill="#e60012" />
-      <polygon points="400,45 430,240 400,435 370,240" fill="#eef1f8" />
-      <text x="400" y="475" text-anchor="middle" fill="#f5c451" font-family="Georgia, serif" font-size="38" font-weight="700" letter-spacing="14">SOULCALIBUR II</text>
-    </svg>
-  </div>
+  <div class="bg-watermark" aria-hidden="true"></div>
   <div class="container">
     <header>
       <img src="https://raw.githubusercontent.com/markaurel13/soulcalibur2-nx/switch-port/switch/assets/icon.jpg" alt="Soulcalibur II NX" />
