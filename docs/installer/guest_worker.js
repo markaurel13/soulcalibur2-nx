@@ -637,6 +637,8 @@ class BlobSlice:
         return self.size
     def __bool__(self):
         return self.size > 0
+    def read(self):
+        return _read_blob(self.key, self.at, self.size)
 
 class BlobParts:
     def __init__(self, parts, total_size):
@@ -813,9 +815,12 @@ def _wrap_ps2_weapon(*a, **kw):
     js.__postProgress(60 + min(10, n * 0.7), f"Converting Heihachi weapon/part {n}...")
     return _orig_ps2_weapon(*a, **kw)
 
-def _wrap_hei_ui(*a, **kw):
+def _wrap_hei_ui(x2, p2, work, *a, **kw):
     js.__postProgress(72, "Converting Heihachi (UI & gallery textures)...")
-    return _orig_hei_ui(*a, **kw)
+    for idx in set(i for i, _, _, _ in build_guest.HEIHACHI_TEXTURES):
+        if idx < len(work) and isinstance(work[idx], BlobSlice):
+            work[idx] = work[idx].read()
+    return _orig_hei_ui(x2, p2, work, *a, **kw)
 
 build_guest.link_block = _wrap_link_block
 build_guest._link_costume = _wrap_link_costume
