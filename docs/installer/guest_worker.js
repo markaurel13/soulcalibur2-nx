@@ -555,13 +555,13 @@ self.onmessage = async (ev) => {
     })();
 
     const gsMems = [];
-    self.__gsAlloc = () => {
+    self._gsAlloc = () => {
       const id = gsMems.length;
       gsMems.push(new Uint8Array(4 << 20));
       return id;
     };
 
-    self.__gsUpload = (id, psm, bp, bw, x0, y0, w, h, pixelsProxy) => {
+    self._gsUpload = (id, psm, bp, bw, x0, y0, w, h, pixelsProxy) => {
       const d = gsMems[id];
       const buf = pixelsProxy.getBuffer("u8");
       try {
@@ -624,7 +624,7 @@ self.onmessage = async (ev) => {
       }
     };
 
-    self.__gsRead32 = (id, bp, bw, w, h) => {
+    self._gsRead32 = (id, bp, bw, w, h) => {
       const d = gsMems[id];
       const out = new Uint8Array(w * h * 4);
       let dst = 0;
@@ -641,7 +641,7 @@ self.onmessage = async (ev) => {
       return out;
     };
 
-    self.__gsRead8 = (id, bp, bw, w, h) => {
+    self._gsRead8 = (id, bp, bw, w, h) => {
       const d = gsMems[id];
       const out = new Uint8Array(w * h);
       const bwHalf = bw >> 1;
@@ -658,7 +658,7 @@ self.onmessage = async (ev) => {
       return out;
     };
 
-    self.__gsRead4 = (id, bp, bw, w, h) => {
+    self._gsRead4 = (id, bp, bw, w, h) => {
       const d = gsMems[id];
       const out = new Uint8Array(w * h);
       const bwHalf = bw >> 1;
@@ -722,17 +722,17 @@ import roster
 
 class _FastGsMemory(gs.Memory):
     def __init__(self):
-        self._id = int(js.__gsAlloc())
+        self._id = int(js._gsAlloc())
     def upload32(self, bp, bw, x0, y0, w, h, pixels):
-        js.__gsUpload(self._id, 0, bp, bw, x0, y0, w, h, pixels)
+        js._gsUpload(self._id, 0, bp, bw, x0, y0, w, h, pixels)
     def upload(self, psm, bp, bw, x0, y0, w, h, pixels):
-        js.__gsUpload(self._id, psm, bp, bw, x0, y0, w, h, pixels)
+        js._gsUpload(self._id, psm, bp, bw, x0, y0, w, h, pixels)
     def read32(self, bp, bw, w, h):
-        return bytes(js.__gsRead32(self._id, bp, bw, w, h).to_py())
+        return bytes(js._gsRead32(self._id, bp, bw, w, h).to_py())
     def read8(self, bp, bw, w, h):
-        return bytes(js.__gsRead8(self._id, bp, bw, w, h).to_py())
+        return bytes(js._gsRead8(self._id, bp, bw, w, h).to_py())
     def read4(self, bp, bw, w, h):
-        return bytes(js.__gsRead4(self._id, bp, bw, w, h).to_py())
+        return bytes(js._gsRead4(self._id, bp, bw, w, h).to_py())
 
 gs.Memory = _FastGsMemory
 ps2tex.gs.Memory = _FastGsMemory
