@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <atomic>
 
-static constexpr int MAX_HW_VOICES = 24;
+static constexpr int MAX_HW_VOICES = 32;
 static constexpr int WAVEBUFS_PER_VOICE = 8;
 static constexpr size_t PER_WAVEBUF_BYTES = 20480; // 5120 stereo 16-bit samples (~106 ms at 48 kHz)
 static constexpr size_t WAVEBUF_POOL_SIZE = MAX_HW_VOICES * WAVEBUFS_PER_VOICE * PER_WAVEBUF_BYTES; // ~3.9 MB
@@ -266,7 +266,7 @@ static bool commitVoiceStaging(int hw_idx) {
             }
         }
         if (pre_idx >= 0) {
-            uint32_t pre_frames = std::clamp(v.sample_rate / 100u, 48u, 512u);
+            uint32_t pre_frames = std::clamp(v.sample_rate / 60u, 96u, 512u);
             size_t pre_bytes = (size_t)pre_frames * dst_ch * sizeof(int16_t);
             size_t pre_aligned = (pre_bytes + 63u) & ~size_t(63u);
             if (pre_aligned <= PER_WAVEBUF_BYTES) {
@@ -367,6 +367,17 @@ static int acquireHwVoice(uint32_t guest_slot, uint32_t sample_rate, uint32_t ds
     if (chosen < 0) {
         for (int i = 0; i < MAX_HW_VOICES; ++i) {
             if (!s_hw_voices[i].active) {
+                chosen = i;
+                break;
+            }
+        }
+    }
+    if (chosen < 0) {
+        // First reclaim any voice that already finished playing before stealing a live voice
+        for (int i = 0; i < MAX_HW_VOICES; ++i) {
+            if (!audrvVoiceIsPlaying(&s_drv, i) &&
+                countActiveWavebufs(s_hw_voices[i]) == 0 &&
+                s_hw_voices[i].staging_frames == 0) {
                 chosen = i;
                 break;
             }
@@ -494,9 +505,11 @@ static void flushAudioInternal(void) {
     if (inst_sum_gain > s_adiag.peak_sum_gain) s_adiag.peak_sum_gain = inst_sum_gain;
     float rms_gain = std::sqrt(sum_sq);
     if (rms_gain > s_adiag.peak_rms_gain) s_adiag.peak_rms_gain = rms_gain;
-    // Volumen maestro fijo a 0.65f (sin ducking dinamico) para evitar que picos
-    // de suma >1.0 disparen el limitador/DRC de salida y mantenga volumen constante.
-    s_final_mix_vol = 0.55f;
+    // Base master mix at 0.55f; smoothly duck only when summed RMS > 1.15f (e.g. 16 simultaneous climax SFX)
+    // so Switch handheld speakers do not clip/crackle without pumping normal dialogue/BGM.
+    float target_mix = (rms_gain > 1.15f) ? std::max(0.32f, 0.55f * (1.15f / rms_gain)) : 0.55f;
+    float coeff = (target_mix < s_final_mix_vol) ? 0.50f : 0.08f;
+    s_final_mix_vol += coeff * (target_mix - s_final_mix_vol);
     if (s_final_mix_vol < s_adiag.min_final_mix) s_adiag.min_final_mix = s_final_mix_vol;
     if (s_final_mix_vol > s_adiag.max_final_mix) s_adiag.max_final_mix = s_final_mix_vol;
     audrvMixSetVolume(&s_drv, AUDREN_FINAL_MIX_ID, s_final_mix_vol);
