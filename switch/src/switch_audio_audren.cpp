@@ -252,6 +252,41 @@ static bool commitVoiceStaging(int hw_idx) {
         return false;
     }
 
+    // When a voice starts (or restarts after an underrun) with an empty queue, prepend a small
+    // ~10 ms silent pre-roll WaveBuf so 16-22 ms frame jitter never starves Audren before the next submit.
+    uint32_t queued_added = 0;
+    if (active_wbs == 0 && !audrvVoiceIsPlaying(&s_drv, hw_idx)) {
+        int pre_idx = -1;
+        for (int w = 0; w < WAVEBUFS_PER_VOICE; ++w) {
+            if (w == wb_idx) continue;
+            if (v.wavebufs[w].state == AudioDriverWaveBufState_Free ||
+                v.wavebufs[w].state == AudioDriverWaveBufState_Done) {
+                pre_idx = w;
+                break;
+            }
+        }
+        if (pre_idx >= 0) {
+            uint32_t pre_frames = std::clamp(v.sample_rate / 100u, 48u, 512u);
+            size_t pre_bytes = (size_t)pre_frames * dst_ch * sizeof(int16_t);
+            size_t pre_aligned = (pre_bytes + 63u) & ~size_t(63u);
+            if (pre_aligned <= PER_WAVEBUF_BYTES) {
+                size_t pre_off = (size_t)(hw_idx * WAVEBUFS_PER_VOICE + pre_idx) * PER_WAVEBUF_BYTES;
+                uint8_t *pre_raw = s_pool_ptr + pre_off;
+                memset(pre_raw, 0, pre_aligned);
+                armDCacheFlush(pre_raw, pre_aligned);
+                AudioDriverWaveBuf *wb_pre = &v.wavebufs[pre_idx];
+                memset(wb_pre, 0, sizeof(*wb_pre));
+                wb_pre->data_pcm16 = reinterpret_cast<s16*>(pre_raw);
+                wb_pre->size = pre_bytes;
+                wb_pre->start_sample_offset = 0;
+                wb_pre->end_sample_offset = pre_frames;
+                wb_pre->is_looping = false;
+                audrvVoiceAddWaveBuf(&s_drv, hw_idx, wb_pre);
+                ++queued_added;
+            }
+        }
+    }
+
     size_t offset = (size_t)(hw_idx * WAVEBUFS_PER_VOICE + wb_idx) * PER_WAVEBUF_BYTES;
     uint8_t *dst_raw = s_pool_ptr + offset;
     memcpy(dst_raw, v.staging_pcm, dst_bytes);
@@ -269,6 +304,7 @@ static bool commitVoiceStaging(int hw_idx) {
     wb->is_looping = false;
 
     audrvVoiceAddWaveBuf(&s_drv, hw_idx, wb);
+    ++queued_added;
     if (!audrvVoiceIsPlaying(&s_drv, hw_idx)) {
         audrvVoiceStart(&s_drv, hw_idx);
     }
@@ -277,7 +313,7 @@ static bool commitVoiceStaging(int hw_idx) {
     s_wavebuf_counter++;
     ++s_adiag.commits;
     s_adiag.total_frames_com += num_frames;
-    uint32_t q_after = (uint32_t)(active_wbs + 1);
+    uint32_t q_after = (uint32_t)active_wbs + queued_added;
     if (q_after < s_adiag.min_wb_queued) s_adiag.min_wb_queued = q_after;
     if (q_after > s_adiag.max_wb_queued) s_adiag.max_wb_queued = q_after;
     return true;
