@@ -285,6 +285,66 @@ self.onmessage = async (ev) => {
       return out;
     };
 
+    self.__swizzlePaletted = (indicesProxy, width, height, size) => {
+      const buf = indicesProxy.getBuffer("u8");
+      try {
+        const indices = buf.data;
+        const pixels = new Uint8Array(size * size);
+        for (let y = 0; y < size; y++) {
+          let sy = 0;
+          for (let b = 0; b < 12; b++) sy |= ((y >> b) & 1) << (2 * b + 1);
+          const row = Math.floor((y * height) / size) * width;
+          for (let x = 0; x < size; x++) {
+            let sx = 0;
+            for (let b = 0; b < 12; b++) sx |= ((x >> b) & 1) << (2 * b);
+            pixels[sx | sy] = indices[row + Math.floor((x * width) / size)];
+          }
+        }
+        return pixels;
+      } finally {
+        buf.release();
+      }
+    };
+
+    self.__convertRgba8Image = (vgtProxy, width, height, sw, sh) => {
+      const buf = vgtProxy.getBuffer("u8");
+      try {
+        const src = buf.data;
+        const pixels = new Uint8Array(sw * sh * 4);
+        const bw = Math.floor((width + 3) / 4);
+        const bh = Math.floor((height + 3) / 4);
+        let at = 0;
+        for (let ty = 0; ty < bh; ty++) {
+          for (let tx = 0; tx < bw; tx++) {
+            for (let i = 0; i < 16; i++) {
+              const x = tx * 4 + (i & 3);
+              const y = ty * 4 + (i >> 2);
+              const a = src[at + i * 2];
+              const r = src[at + i * 2 + 1];
+              const g = src[at + 32 + i * 2];
+              const b = src[at + 32 + i * 2 + 1];
+              if (x < width && y < height) {
+                let swz = 0, bit = 0, xx = x, yy = y, ww = sw, hh = sh;
+                while (ww > 1 || hh > 1) {
+                  if (ww > 1) { swz |= (xx & 1) << bit++; xx >>= 1; ww >>= 1; }
+                  if (hh > 1) { swz |= (yy & 1) << bit++; yy >>= 1; hh >>= 1; }
+                }
+                const dst = swz * 4;
+                pixels[dst] = b;
+                pixels[dst + 1] = g;
+                pixels[dst + 2] = r;
+                pixels[dst + 3] = a;
+              }
+            }
+            at += 64;
+          }
+        }
+        return pixels;
+      } finally {
+        buf.release();
+      }
+    };
+
     postProgress(35, "Building guests.olk (Link & Heihachi)...");
     postLog("Running roster.py (streaming Blob-backed Olnk + JS JIT accelerators)...");
 
@@ -324,6 +384,54 @@ def _fast_convert_texture(vgt, base, entry):
     return _orig_convert_texture(vgt, base, entry)
 
 textures.convert_texture = _fast_convert_texture
+
+def _fast_paletted_bank(images, size=512):
+    count = len(images)
+    table = 0x14 + 0x24 * count
+    descriptors = table
+    palettes_at = (descriptors + 12 * count + 0x7f) & ~0x7f
+    data_at = (palettes_at + 0x400 * count + 0x7f) & ~0x7f
+    out = bytearray(data_at + size * size * count)
+    out[0:0x14] = b"VXT." + bytes((2, 4, 2, 0)) + struct.pack("<III", count, 0x14, descriptors + 12 * count)
+    dims = size << 16 | size
+    for k, (entry_flags, width, height, palette, indices) in enumerate(images):
+        out[palettes_at + 0x400 * k:palettes_at + 0x400 * (k + 1)] = palette
+        pixels = bytes(js.__swizzlePaletted(indices, width, height, size).to_py())
+        base = data_at + size * size * k
+        out[base:base + size * size] = pixels
+        word0 = descriptors + 12 * k
+        struct.pack_into("<9I", out, 0x14 + 0x24 * k, word0, entry_flags, 0, dims, base, textures.D3D_P8, dims, 1, 0)
+        struct.pack_into("<3I", out, descriptors + 12 * k, palettes_at + 0x400 * k, 0x100, 0)
+    return bytes(out)
+
+def _fast_convert_rgba8_bank(vgt, flags=None):
+    if vgt[:4] != b"VGT.":
+        raise ValueError("not a VGT bank")
+    count = struct.unpack_from(">I", vgt, 8)[0]
+    table = 0x14 + 0x24 * count
+    data_at = (table + 0x7f) & ~0x7f
+    out = bytearray(b"VXT." + bytes((2, 4, 2, 0)) + struct.pack("<IIII", count, 0x14, table, 0))
+    entries_b, data_b = bytearray(), bytearray()
+    mv = memoryview(vgt)
+    for k in range(count):
+        entry = struct.unpack_from(">17I", vgt, 0x18 + k * 0x44)
+        fmt, width, height = textures._gx(entry[3])
+        if fmt != textures.RGBA8:
+            raise ValueError("texture format %d" % fmt)
+        entry_flags = flags if flags is not None else textures._MODES.get(entry[1], (0x241b, False))[0]
+        sw, sh = 1 << (width - 1).bit_length(), 1 << (height - 1).bit_length()
+        sz = textures.rgba8_size(width, height)
+        pixels = bytes(js.__convertRgba8Image(mv[entry[4]:entry[4] + sz], width, height, sw, sh).to_py())
+        entries_b += struct.pack("<9I", entry_flags, 0, height << 16 | width, data_at + len(data_b), textures.D3D_A8R8G8B8,
+                                 sh << 16 | sw, 1, 0, 0)
+        data_b += pixels
+        data_b += bytes(-len(data_b) & 0x7f)
+    out = (out + entries_b)[:table]
+    out += bytes(data_at - len(out))
+    return bytes(out + data_b)
+
+textures.paletted_bank = _fast_paletted_bank
+textures.convert_rgba8_bank = _fast_convert_rgba8_bank
 
 def _read_blob(key, off, length):
     if length <= 0:
