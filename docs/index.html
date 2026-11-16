@@ -22,37 +22,12 @@
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background:
-        radial-gradient(circle at 18% 15%, rgba(230, 0, 18, 0.16) 0%, transparent 45%),
-        radial-gradient(circle at 82% 20%, rgba(245, 196, 81, 0.14) 0%, transparent 45%),
-        radial-gradient(circle at 50% 85%, rgba(45, 110, 220, 0.12) 0%, transparent 50%),
-        #080a10;
+      background: radial-gradient(circle at top, #181e33 0%, var(--bg) 60%);
       color: var(--text);
       min-height: 100vh;
       padding: 32px 16px 64px;
-      position: relative;
-      overflow-x: hidden;
     }
-    .bg-watermark {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 0;
-      overflow: hidden;
-      background:
-        linear-gradient(180deg, rgba(8, 10, 16, 0.72) 0%, rgba(8, 10, 16, 0.82) 55%, rgba(8, 10, 16, 0.92) 100%),
-        radial-gradient(circle at 50% 25%, rgba(245, 196, 81, 0.10) 0%, transparent 60%);
-    }
-    .bg-watermark::before {
-      content: "";
-      position: absolute;
-      inset: -24px;
-      background: url("./screenshots/link-vs-heihachi.jpg") center center / cover no-repeat;
-      filter: blur(4px) saturate(1.15);
-      opacity: 0.34;
-      z-index: -1;
-    }
-    .container { max-width: 860px; margin: 0 auto; position: relative; z-index: 1; }
+    .container { max-width: 860px; margin: 0 auto; }
     header { text-align: center; margin-bottom: 28px; }
     header img {
       width: 120px; height: 120px; border-radius: 20px;
@@ -197,7 +172,6 @@
   </style>
 </head>
 <body>
-  <div class="bg-watermark" aria-hidden="true"></div>
   <div class="container">
     <header>
       <img src="https://raw.githubusercontent.com/markaurel13/soulcalibur2-nx/switch-port/switch/assets/icon.jpg" alt="Soulcalibur II NX" />
