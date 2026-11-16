@@ -422,6 +422,32 @@ async function buildSwitchPackageZip() {
     log(`Packaging Switch ZIP (${formatBytes(totalBytes)})...`);
 
     const zipResponse = downloadZip(entries);
+    const reader = zipResponse.body.getReader();
+    let written = 0;
+    let nextLogPct = 25;
+    let lastUiBytes = 0;
+
+    async function consumeZipStream(onChunk) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await onChunk(value);
+        written += value.byteLength;
+        const zipPct = Math.min(100, (written / totalBytes) * 100);
+        if (written - lastUiBytes >= 4 * 1024 * 1024 || zipPct >= 100) {
+          lastUiBytes = written;
+          const pct = 75 + (zipPct / 100) * 25;
+          setProgress(
+            pct,
+            `Packaging ZIP: ${formatBytes(written)} / ${formatBytes(totalBytes)} (${Math.floor(zipPct)}%)`
+          );
+        }
+        while (zipPct >= nextLogPct && nextLogPct <= 100) {
+          log(`Packaging Switch ZIP: ${nextLogPct}% (${formatBytes(written)} / ${formatBytes(totalBytes)})...`);
+          nextLogPct += 25;
+        }
+      }
+    }
 
     if (window.showSaveFilePicker) {
       const handle = await window.showSaveFilePicker({
@@ -429,24 +455,19 @@ async function buildSwitchPackageZip() {
         types: [{ description: "ZIP Archive", accept: { "application/zip": [".zip"] } }],
       });
       const writable = await handle.createWritable();
-      let written = 0;
-      const reader = zipResponse.body.getReader();
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await writable.write(value);
-          written += value.byteLength;
-          const pct = 75 + Math.min(25, (written / totalBytes) * 25);
-          setProgress(pct, `Saving soulcalibur2_nx_package.zip... (${formatBytes(written)})`);
-        }
+        await consumeZipStream((chunk) => writable.write(chunk));
       } finally {
         await writable.close();
       }
       setProgress(100, "Switch package saved! Extract it to the root of your microSD card.");
       log("Done! soulcalibur2_nx_package.zip saved (switch/soulcalibur2/ structure).", "ok");
     } else {
-      const zipBlob = await zipResponse.blob();
+      const chunks = [];
+      await consumeZipStream((chunk) => {
+        chunks.push(chunk);
+      });
+      const zipBlob = new Blob(chunks, { type: "application/zip" });
       const url = URL.createObjectURL(zipBlob);
       const a = document.createElement("a");
       a.href = url;
