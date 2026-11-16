@@ -20,16 +20,18 @@ static const char *MOD_CONFIG_PATH = "sdmc:/switch/soulcalibur2/save/config.txt"
 
 static std::atomic<bool> s_mod_menu_open{false};
 static std::atomic<bool> s_mod_unlock_all{false};
+static std::atomic<bool> s_mod_nintendo_layout{false};
 static std::atomic<int>  s_mod_cursor{0};
 static std::atomic<bool> s_mod_unlock_applied{false};
 static bool s_mod_config_loaded = false;
 
-static void saveModConfig(bool unlock_all) {
+static void saveModConfig(bool unlock_all, bool nintendo_layout) {
     mkdir("sdmc:/switch/soulcalibur2", 0777);
     mkdir("sdmc:/switch/soulcalibur2/save", 0777);
     FILE *f = fopen(MOD_CONFIG_PATH, "w");
     if (f) {
         fprintf(f, "unlock_all=%s\n", unlock_all ? "ON" : "OFF");
+        fprintf(f, "button_layout=%s\n", nintendo_layout ? "NINTENDO" : "XBOX");
         fclose(f);
     }
 }
@@ -40,31 +42,49 @@ static void loadOrCreateModConfig(void) {
     FILE *f = fopen(MOD_CONFIG_PATH, "r");
     if (!f) {
         s_mod_unlock_all.store(false, std::memory_order_release);
-        saveModConfig(false);
-        printf("[ModMenu] Created default %s (unlock_all=OFF)\n", MOD_CONFIG_PATH);
+        s_mod_nintendo_layout.store(false, std::memory_order_release);
+        saveModConfig(false, false);
+        printf("[ModMenu] Created default %s (unlock_all=OFF, button_layout=XBOX)\n", MOD_CONFIG_PATH);
         return;
     }
     char line[128];
     bool val = false;
+    bool nintendo = false;
     while (fgets(line, sizeof(line), f)) {
         if (strncmp(line, "unlock_all=", 11) == 0) {
             const char *p = line + 11;
             if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0 || p[0] == '1') {
                 val = true;
             }
+        } else if (strncmp(line, "button_layout=", 14) == 0) {
+            const char *p = line + 14;
+            if (strncmp(p, "NINTENDO", 8) == 0 || strncmp(p, "nintendo", 8) == 0 || p[0] == '1') {
+                nintendo = true;
+            }
         }
     }
     fclose(f);
     s_mod_unlock_all.store(val, std::memory_order_release);
-    printf("[ModMenu] Loaded %s (unlock_all=%s)\n", MOD_CONFIG_PATH, val ? "ON" : "OFF");
+    s_mod_nintendo_layout.store(nintendo, std::memory_order_release);
+    printf("[ModMenu] Loaded %s (unlock_all=%s, button_layout=%s)\n",
+           MOD_CONFIG_PATH, val ? "ON" : "OFF", nintendo ? "NINTENDO" : "XBOX");
 }
+
+static std::atomic<bool> s_ui_unlock_all{false};
+static std::atomic<bool> s_ui_nintendo_layout{false};
 
 extern "C" bool SwitchModMenu_IsOpen(void) {
     return s_mod_menu_open.load(std::memory_order_acquire);
 }
 
 extern "C" bool SwitchModMenu_GetUnlockAll(void) {
-    return s_mod_unlock_all.load(std::memory_order_acquire);
+    return (s_mod_menu_open.load(std::memory_order_acquire) ? s_ui_unlock_all : s_mod_unlock_all)
+        .load(std::memory_order_acquire);
+}
+
+extern "C" bool SwitchModMenu_GetNintendoLayout(void) {
+    return (s_mod_menu_open.load(std::memory_order_acquire) ? s_ui_nintendo_layout : s_mod_nintendo_layout)
+        .load(std::memory_order_acquire);
 }
 
 extern "C" int SwitchModMenu_GetCursor(void) {
@@ -131,6 +151,7 @@ void ShowControllerApplet(int minPlayers, int maxPlayers) {
 
 static u64 s_pause_prev_held = 0;
 static bool s_pause_prev_stick_lr = false;
+static bool s_pause_prev_stick_ud = false;
 static bool s_pause_minus_released = false;
 static uint64_t s_pause_close_minus_start = 0;
 static uint64_t s_minus_hold_start = 0;
@@ -151,10 +172,13 @@ static bool applyFull300UnlockAll(void) {
 }
 
 extern "C" void SwitchModMenu_ResetPauseState(void) {
+    s_ui_unlock_all.store(s_mod_unlock_all.load(std::memory_order_acquire), std::memory_order_release);
+    s_ui_nintendo_layout.store(s_mod_nintendo_layout.load(std::memory_order_acquire), std::memory_order_release);
     padUpdate(&SwitchInput::s_pads[0]);
     s_pause_prev_held = padGetButtons(&SwitchInput::s_pads[0]);
     HidAnalogStickState st = padGetStickPos(&SwitchInput::s_pads[0], 0);
     s_pause_prev_stick_lr = (st.x < -16000) || (st.x > 16000);
+    s_pause_prev_stick_ud = (st.y < -16000) || (st.y > 16000);
     s_pause_minus_released = false;
     s_pause_close_minus_start = 0;
 }
@@ -183,33 +207,35 @@ extern "C" bool SwitchModMenu_TickPause(void) {
     bool stick_lr_down = stick_lr && !s_pause_prev_stick_lr;
     s_pause_prev_stick_lr = stick_lr;
 
+    bool stick_up = (cur_stick.y > 16000);
+    bool stick_dn = (cur_stick.y < -16000);
+    bool stick_ud = stick_up || stick_dn;
+    bool stick_up_down = stick_up && !s_pause_prev_stick_ud;
+    bool stick_dn_down = stick_dn && !s_pause_prev_stick_ud;
+    s_pause_prev_stick_ud = stick_ud;
+
     bool need_refresh = false;
-    constexpr int kNumOptions = 1;
-    if (kDown & HidNpadButton_Up) {
+    constexpr int kNumOptions = 2;
+    if ((kDown & HidNpadButton_Up) || stick_up_down) {
         int c = s_mod_cursor.load(std::memory_order_acquire);
         s_mod_cursor.store((c + kNumOptions - 1) % kNumOptions, std::memory_order_release);
         need_refresh = true;
     }
-    if (kDown & HidNpadButton_Down) {
+    if ((kDown & HidNpadButton_Down) || stick_dn_down) {
         int c = s_mod_cursor.load(std::memory_order_acquire);
         s_mod_cursor.store((c + 1) % kNumOptions, std::memory_order_release);
         need_refresh = true;
     }
-    if ((kDown & (HidNpadButton_B | HidNpadButton_Left | HidNpadButton_Right)) || stick_lr_down) {
+    u64 confirm_btn = s_mod_nintendo_layout.load(std::memory_order_acquire) ? HidNpadButton_A : HidNpadButton_B;
+    if ((kDown & (confirm_btn | HidNpadButton_Left | HidNpadButton_Right)) || stick_lr_down) {
         int c = s_mod_cursor.load(std::memory_order_acquire);
         if (c == 0) {
-            bool next_val = !s_mod_unlock_all.load(std::memory_order_acquire);
-            s_mod_unlock_all.store(next_val, std::memory_order_release);
-            saveModConfig(next_val);
-            if (next_val) {
-                bool ok = (sc2_scene != 0u) && applyFull300UnlockAll();
-                if (ok) s_mod_unlock_applied.store(true, std::memory_order_release);
-                printf("[ModMenu] Manual applyFull300UnlockAll() -> %s (scene=%u)\n",
-                       ok ? "OK" : "DEFERRED", sc2_scene);
-            } else {
-                s_mod_unlock_applied.store(false, std::memory_order_release);
-            }
-            printf("[ModMenu] unlock_all=%s (saved to %s)\n", next_val ? "ON" : "OFF", MOD_CONFIG_PATH);
+            bool next_val = !s_ui_unlock_all.load(std::memory_order_acquire);
+            s_ui_unlock_all.store(next_val, std::memory_order_release);
+            need_refresh = true;
+        } else if (c == 1) {
+            bool next_layout = !s_ui_nintendo_layout.load(std::memory_order_acquire);
+            s_ui_nintendo_layout.store(next_layout, std::memory_order_release);
             need_refresh = true;
         }
     }
@@ -217,6 +243,32 @@ extern "C" bool SwitchModMenu_TickPause(void) {
 }
 
 extern "C" void SwitchModMenu_WaitReleaseOnExit(void) {
+    bool prev_unlock = s_mod_unlock_all.load(std::memory_order_acquire);
+    bool prev_nintendo = s_mod_nintendo_layout.load(std::memory_order_acquire);
+    bool new_unlock = s_ui_unlock_all.load(std::memory_order_acquire);
+    bool new_nintendo = s_ui_nintendo_layout.load(std::memory_order_acquire);
+    bool unlock_changed = (new_unlock != prev_unlock);
+    bool layout_changed = (new_nintendo != prev_nintendo);
+
+    s_mod_unlock_all.store(new_unlock, std::memory_order_release);
+    s_mod_nintendo_layout.store(new_nintendo, std::memory_order_release);
+
+    if (unlock_changed || layout_changed) {
+        saveModConfig(new_unlock, new_nintendo);
+        if (unlock_changed) {
+            if (new_unlock) {
+                bool ok = (sc2_scene != 0u) && applyFull300UnlockAll();
+                if (ok) s_mod_unlock_applied.store(true, std::memory_order_release);
+                printf("[ModMenu] Exit commit: applyFull300UnlockAll() -> %s (scene=%u)\n",
+                       ok ? "OK" : "DEFERRED", sc2_scene);
+            } else {
+                s_mod_unlock_applied.store(false, std::memory_order_release);
+            }
+        }
+        printf("[ModMenu] Exit saved: unlock_all=%s, button_layout=%s (%s)\n",
+               new_unlock ? "ON" : "OFF", new_nintendo ? "NINTENDO" : "XBOX", MOD_CONFIG_PATH);
+    }
+
     while (!Switch_IsAppExiting()) {
         padUpdate(&SwitchInput::s_pads[0]);
         u64 cur_held = padGetButtons(&SwitchInput::s_pads[0]);
@@ -286,6 +338,8 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
                 s_minus_toggled = false;
             } else if (!s_minus_toggled && (now_tick - s_minus_hold_start) >= 19200000ULL) {
                 s_minus_toggled = true;
+                s_ui_unlock_all.store(s_mod_unlock_all.load(std::memory_order_acquire), std::memory_order_release);
+                s_ui_nintendo_layout.store(s_mod_nintendo_layout.load(std::memory_order_acquire), std::memory_order_release);
                 s_mod_menu_open.store(true, std::memory_order_release);
                 printf("[ModMenu] OPENED (pausing at frame boundary)\n");
                 return true; // *gamepad stays zeroed
@@ -343,13 +397,18 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
     gamepad->buttons = b;
 
     // Analog buttons: A, B, X, Y, Black (L), White (R), LTrigger (ZL), RTrigger (ZR)
-    // Map Switch layout to Xbox layout:
-    // Switch B (bottom) -> Xbox A
-    // Switch A (right)  -> Xbox B
-    // Switch Y (left)   -> Xbox X
-    // Switch X (top)    -> Xbox Y
-    if (kHeld & HidNpadButton_B) gamepad->analog_buttons[0] = 255;
-    if (kHeld & HidNpadButton_A) gamepad->analog_buttons[1] = 255;
+    // Xbox layout (default): Switch B (bottom) -> Xbox A, Switch A (right) -> Xbox B
+    // Nintendo layout: swaps A/B in menus (cur_scene != 7), keeps physical Kick/Guard in combat (cur_scene == 7)
+    uint32_t cur_scene = *reinterpret_cast<const uint32_t *>(recomp_memory(0x398700u, 4u));
+    const bool fight_paused = (*reinterpret_cast<const uint32_t *>(recomp_memory(0x0039899Cu, 4u)) != 0u);
+    const bool in_fight = (cur_scene == 7u) && !fight_paused;
+    if (s_mod_nintendo_layout.load(std::memory_order_acquire) && !in_fight) {
+        if (kHeld & HidNpadButton_A) gamepad->analog_buttons[0] = 255;
+        if (kHeld & HidNpadButton_B) gamepad->analog_buttons[1] = 255;
+    } else {
+        if (kHeld & HidNpadButton_B) gamepad->analog_buttons[0] = 255;
+        if (kHeld & HidNpadButton_A) gamepad->analog_buttons[1] = 255;
+    }
     if (kHeld & HidNpadButton_Y) gamepad->analog_buttons[2] = 255;
     if (kHeld & HidNpadButton_X) gamepad->analog_buttons[3] = 255;
     if (kHeld & HidNpadButton_L) gamepad->analog_buttons[4] = 255;

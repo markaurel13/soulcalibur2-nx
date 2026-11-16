@@ -2128,11 +2128,11 @@ static void drawFpsOverlay(RecompD3dPresenter *p, DkCmdBuf cmd, double fps, doub
 }
 
 static constexpr int MOD_MENU_W = 820;
-static constexpr int MOD_MENU_H = 310;
+static constexpr int MOD_MENU_H = 352;
 static uint32_t s_mod_menu_img[MOD_MENU_W * MOD_MENU_H];
 static int s_mod_menu_last_state = -1;
 
-static void rasterizeModMenuTekken3Style(bool unlock_all, int cursor, bool applied) {
+static void rasterizeModMenuTekken3Style(bool unlock_all, bool nintendo_layout, int cursor, bool applied) {
     auto fill_rect = [&](int rx, int ry, int rw, int rh, uint32_t color) {
         int x1 = rx < 0 ? 0 : rx;
         int y1 = ry < 0 ? 0 : ry;
@@ -2190,33 +2190,42 @@ static void rasterizeModMenuTekken3Style(bool unlock_all, int cursor, bool appli
     draw_text(170, 19, "SOULCALIBUR II NX - MOD MENU", 0xFFFFD700u, 2);
 
     // Selected row highlight
-    const int row_y = 82;
-    if (cursor == 0) {
-        fill_rect(18, row_y - 8, MOD_MENU_W - 36, 36, 0xFF1E3A5Fu);
-        draw_border(18, row_y - 8, MOD_MENU_W - 36, 36, 0xFF00D4FFu, 1);
+    const int item_y[2] = { 76, 122 };
+    if (cursor >= 0 && cursor < 2) {
+        fill_rect(18, item_y[cursor] - 8, MOD_MENU_W - 36, 36, 0xFF1E3A5Fu);
+        draw_border(18, item_y[cursor] - 8, MOD_MENU_W - 36, 36, 0xFF00D4FFu, 1);
     }
 
-    draw_text(34, row_y + 2, cursor == 0 ? "> Unlock All Content :" : "  Unlock All Content :",
+    draw_text(34, item_y[0] + 2, cursor == 0 ? "> Unlock All Content :" : "  Unlock All Content :",
               cursor == 0 ? 0xFFFFFFFFu : 0xFFB0C4DEu, 2);
     const char *val_str = unlock_all ? "< 1: ON (All 100%)  >" : "< 0: OFF (SaveFile) >";
-    draw_text(442, row_y + 2, val_str, unlock_all ? 0xFF55FF55u : 0xFF55FFFFu, 2);
+    draw_text(442, item_y[0] + 2, val_str, unlock_all ? 0xFF55FF55u : 0xFF55FFFFu, 2);
+
+    draw_text(34, item_y[1] + 2, cursor == 1 ? "> Button Layout      :" : "  Button Layout      :",
+              cursor == 1 ? 0xFFFFFFFFu : 0xFFB0C4DEu, 2);
+    const char *lay_str = nintendo_layout ? "< NINTENDO (A / B)  >" : "< XBOX (Default)    >";
+    draw_text(442, item_y[1] + 2, lay_str, nintendo_layout ? 0xFFFFE066u : 0xFF55FFFFu, 2);
 
     // Status box
-    fill_rect(24, 146, MOD_MENU_W - 48, 1, 0xFF334455u);
+    fill_rect(24, 174, MOD_MENU_W - 48, 1, 0xFF334455u);
     const char *status_msg = unlock_all
         ? (applied
-            ? "Status: Active! Characters, Weapons & all 18 Stages unlocked."
+            ? "Status: Active! Characters, Weapons & all Stages unlocked."
             : "Status: Saved ON! Enter Title/Menus or restart to apply.")
         : "Status: OFF (saved in sdmc:/switch/soulcalibur2/save/config.txt)";
-    fill_rect(26, 162, MOD_MENU_W - 52, 32, unlock_all ? 0xFF003322u : 0xFF161E2Eu);
-    draw_border(26, 162, MOD_MENU_W - 52, 32, unlock_all ? 0xFF00FF88u : 0xFF334455u, 1);
-    draw_text(40, 174, status_msg, unlock_all ? 0xFF00FFAAu : 0xFFB0C4DEu, 1);
+    fill_rect(26, 190, MOD_MENU_W - 52, 32, unlock_all ? 0xFF003322u : 0xFF161E2Eu);
+    draw_border(26, 190, MOD_MENU_W - 52, 32, unlock_all ? 0xFF00FF88u : 0xFF334455u, 1);
+    draw_text(40, 202, status_msg, unlock_all ? 0xFF00FFAAu : 0xFFB0C4DEu, 1);
 
     // Footer separator & Minus-only 1s hold close hint
-    fill_rect(24, 214, MOD_MENU_W - 48, 1, 0xFF334455u);
-    draw_text(36, 232, "B Button / Left / Right: Toggle ON / OFF   |   Hold (-) 1s: Close", 0xFFAAAAAAu, 1);
-    draw_text(36, 256, "* NOTE: Unlock All applies automatically once the game reaches Title/Menus,", 0xFFFFB84Du, 1);
-    draw_text(36, 274, "  after loading your save file (characters, weapons and all 18 stages).", 0xFFFFB84Du, 1);
+    fill_rect(24, 242, MOD_MENU_W - 48, 1, 0xFF334455u);
+    draw_text(36, 260,
+              nintendo_layout
+                  ? "Up / Down: Select   |   A / Left / Right: Change   |   Hold (-) 1s: Close"
+                  : "Up / Down: Select   |   B / Left / Right: Change   |   Hold (-) 1s: Close",
+              0xFFAAAAAAu, 1);
+    draw_text(36, 286, "* Unlock All applies automatically after loading your save file.", 0xFFFFB84Du, 1);
+    draw_text(36, 304, "* Button Layout swaps A and B immediately (Xbox vs Nintendo).", 0xFFFFB84Du, 1);
 }
 
 static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
@@ -2252,15 +2261,16 @@ static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
     dkImageViewDefaults(&menu_view, &p->mod_font_image);
 
     bool unlock_all = SwitchModMenu_GetUnlockAll();
+    bool nintendo_layout = SwitchModMenu_GetNintendoLayout();
     int cursor = SwitchModMenu_GetCursor();
     bool applied = SwitchModMenu_WasApplied();
-    int state_key = (unlock_all ? 1 : 0) | ((cursor & 3) << 1) | (applied ? 8 : 0);
+    int state_key = (unlock_all ? 1 : 0) | ((cursor & 3) << 1) | (applied ? 8 : 0) | (nintendo_layout ? 16 : 0);
 
     if (state_key != s_mod_menu_last_state) {
         const uint32_t tex_bytes = (uint32_t)(MOD_MENU_W * MOD_MENU_H * 4);
         p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
         if (p->dyn_offset + tex_bytes + 1024u <= DYN_BUF_SIZE) {
-            rasterizeModMenuTekken3Style(unlock_all, cursor, applied);
+            rasterizeModMenuTekken3Style(unlock_all, nintendo_layout, cursor, applied);
 
             uint32_t slot = p->cur_cmd_slot;
             uint32_t tex_off = p->dyn_offset;
