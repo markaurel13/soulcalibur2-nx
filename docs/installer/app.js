@@ -453,6 +453,19 @@ async function buildSwitchPackageZip() {
   state.isBuilding = true;
   updateUI();
   try {
+    let saveHandle = null;
+    if (window.showSaveFilePicker) {
+      try {
+        saveHandle = await window.showSaveFilePicker({
+          suggestedName: "soulcalibur2_nx_package.zip",
+          types: [{ description: "ZIP Archive", accept: { "application/zip": [".zip"] } }],
+        });
+      } catch (pickerErr) {
+        if (pickerErr.name === "AbortError") throw pickerErr;
+        log(`Save picker unavailable (${pickerErr.message}); falling back to browser download.`, "warn");
+      }
+    }
+
     const guests = await buildGuestsIfNeeded();
     if (!guests) {
       throw new Error("Both GameCube and PS2 discs are required to build guests.olk.");
@@ -500,12 +513,8 @@ async function buildSwitchPackageZip() {
       }
     }
 
-    if (window.showSaveFilePicker) {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: "soulcalibur2_nx_package.zip",
-        types: [{ description: "ZIP Archive", accept: { "application/zip": [".zip"] } }],
-      });
-      const writable = await handle.createWritable();
+    if (saveHandle) {
+      const writable = await saveHandle.createWritable();
       try {
         await consumeZipStream((chunk) => writable.write(chunk));
       } finally {
