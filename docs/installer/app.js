@@ -330,9 +330,15 @@ async function buildGuestsIfNeeded() {
   await py.runPythonAsync(`
 import sys
 sys.path.insert(0, "/work/scripts")
+import olnk
 import roster
-sys.argv = ["roster.py", *${JSON.stringify(args)}]
-roster.main()
+olnk.Olnk.open = classmethod(lambda cls, path: cls(open(path, "rb").read()))
+roster.build_roster(
+  "/work/xb/root.olk",
+  ${hasGc ? '"/work/gc/root.olk"' : "None"},
+  ${hasPs2 ? '"/work/ps2/root.olk"' : "None"},
+  "/work/guests.olk"
+)
 `);
 
   const outBytes = py.FS.readFile("/work/guests.olk");
