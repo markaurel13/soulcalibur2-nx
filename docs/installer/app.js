@@ -1,4 +1,4 @@
-import { DiscParsers } from "./xiso.js";
+import { DiscParsers } from "./xiso.js?v=20261115b";
 import { downloadZip } from "https://cdn.jsdelivr.net/npm/client-zip@2.4.5/+esm";
 
 const REPO_OWNER = "markaurel13";
