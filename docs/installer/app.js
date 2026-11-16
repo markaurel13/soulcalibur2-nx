@@ -41,6 +41,7 @@ const state = {
   },
   guestsBlob: null,
   pyodide: null,
+  isBuilding: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -103,7 +104,7 @@ function updateUI() {
     : `<span class="pill missing">✗ PS2 ISO (Heihachi)</span>`;
 
   const canBuild = readyXbox && readyGc && readyPs2;
-  $("btn-build-zip").disabled = !canBuild;
+  $("btn-build-zip").disabled = !canBuild || state.isBuilding;
 
   const hint = $("final-size-hint");
   if (readyXbox) {
@@ -291,7 +292,7 @@ async function buildGuestsIfNeeded() {
   );
 
   const guestsBlob = await new Promise((resolve, reject) => {
-    const worker = new Worker("./installer/guest_worker.js?v=20261115d");
+    const worker = new Worker("./installer/guest_worker.js?v=20261115e");
     worker.onmessage = (ev) => {
       const msg = ev.data;
       if (msg.type === "progress") {
@@ -395,6 +396,11 @@ async function exportToDirectory() {
 }
 
 async function buildSwitchPackageZip() {
+  if (state.isBuilding) return;
+  state.isBuilding = true;
+  const btn = $("btn-build-zip");
+  btn.textContent = "⏳ Building Switch Package...";
+  updateUI();
   try {
     const guests = await buildGuestsIfNeeded();
     if (!guests) {
@@ -456,6 +462,10 @@ async function buildSwitchPackageZip() {
     if (err.name !== "AbortError") {
       log(`Error building Switch package: ${err.message}`, "error");
     }
+  } finally {
+    state.isBuilding = false;
+    btn.textContent = "⚡ Build Switch Package";
+    updateUI();
   }
 }
 

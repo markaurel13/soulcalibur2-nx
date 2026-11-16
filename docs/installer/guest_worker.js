@@ -62,7 +62,12 @@ self.onmessage = async (ev) => {
       outputParts = jsParts;
     };
 
-    postProgress(55, "Building guests.olk (Link & Heihachi)...");
+    self.__postProgress = (pct, label) => {
+      postProgress(pct, label);
+      postLog(label);
+    };
+
+    postProgress(35, "Building guests.olk (Link & Heihachi)...");
     postLog("Running roster.py (streaming Blob-backed Olnk)...");
 
     await pyodide.runPythonAsync(`
@@ -70,6 +75,7 @@ import sys, struct, builtins
 import js
 sys.path.insert(0, "/work/scripts")
 import olnk
+import build_guest
 import roster
 
 def _read_blob(key, off, length):
@@ -213,6 +219,32 @@ def _hook_open(path, mode="r", *a, **kw):
         return _GuestSink()
     return _orig_open(path, mode, *a, **kw)
 
+_orig_link_block = build_guest.link_block
+_orig_guest_ui = build_guest.guest_ui
+_orig_hei_block = build_guest.heihachi_block
+_orig_hei_ui = build_guest.heihachi_ui
+
+def _wrap_link_block(*a, **kw):
+    js.__postProgress(40, "Converting Link (models, moves, sounds)...")
+    return _orig_link_block(*a, **kw)
+
+def _wrap_guest_ui(*a, **kw):
+    js.__postProgress(52, "Converting Link (UI & gallery textures)...")
+    return _orig_guest_ui(*a, **kw)
+
+def _wrap_hei_block(*a, **kw):
+    js.__postProgress(60, "Converting Heihachi (models & sounds)...")
+    return _orig_hei_block(*a, **kw)
+
+def _wrap_hei_ui(*a, **kw):
+    js.__postProgress(70, "Converting Heihachi (UI & gallery textures)...")
+    return _orig_hei_ui(*a, **kw)
+
+build_guest.link_block = _wrap_link_block
+build_guest.guest_ui = _wrap_guest_ui
+build_guest.heihachi_block = _wrap_hei_block
+build_guest.heihachi_ui = _wrap_hei_ui
+
 builtins.open = _hook_open
 try:
     roster.build_roster(
@@ -224,6 +256,7 @@ try:
 finally:
     builtins.open = _orig_open
 
+js.__postProgress(74, "Assembling guests.olk...")
 js.__emitGuestsParts(_captured_parts)
 `);
 
