@@ -40,9 +40,28 @@ const state = {
     "slus_206.43": null,
   },
   guestsBlob: null,
+  zipUrl: null,
+  packageBuilt: false,
   pyodide: null,
   isBuilding: false,
 };
+
+function resetBuiltPackage() {
+  state.packageBuilt = false;
+  if (state.zipUrl) {
+    URL.revokeObjectURL(state.zipUrl);
+    state.zipUrl = null;
+  }
+}
+
+function triggerZipDownload(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "soulcalibur2_nx_package.zip";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -104,7 +123,15 @@ function updateUI() {
     : `<span class="pill missing">✗ PS2 ISO (Heihachi)</span>`;
 
   const canBuild = readyXbox && readyGc && readyPs2;
-  $("btn-build-zip").disabled = !canBuild || state.isBuilding;
+  const btn = $("btn-build-zip");
+  btn.disabled = !canBuild || state.isBuilding;
+  if (state.isBuilding) {
+    btn.textContent = "⏳ Building Switch Package...";
+  } else if (state.packageBuilt) {
+    btn.textContent = "⬇ Download Again";
+  } else {
+    btn.textContent = "⚡ Build Switch Package";
+  }
 
   const hint = $("final-size-hint");
   if (readyXbox) {
@@ -183,6 +210,8 @@ async function handleXboxInput(fileList) {
         }
       }
       log(`Xbox ISO parsed: ${foundCount}/4 files ready.`, "ok");
+      state.guestsBlob = null;
+      resetBuiltPackage();
     }
   } catch (err) {
     log(`Failed to read Xbox ISO: ${err.message}`, "error");
@@ -215,6 +244,7 @@ async function handleGameCubeInput(fileList) {
       blob: entries["boot.dol"].blob,
     };
     state.guestsBlob = null;
+    resetBuiltPackage();
     log("GameCube ISO ready to extract Link.", "ok");
   } catch (err) {
     log(`Failed to read GameCube ISO: ${err.message}`, "error");
@@ -264,6 +294,7 @@ async function handlePs2Input(fileList) {
       blob: file.slice(entries["slus_206.43"].offset, entries["slus_206.43"].offset + entries["slus_206.43"].size),
     };
     state.guestsBlob = null;
+    resetBuiltPackage();
     log("PS2 ISO ready to extract Heihachi.", "ok");
   } catch (err) {
     log(`Failed to read PS2 ISO: ${err.message}`, "error");
@@ -414,9 +445,12 @@ async function exportToDirectory() {
 
 async function buildSwitchPackageZip() {
   if (state.isBuilding) return;
+  if (state.packageBuilt && state.zipUrl) {
+    triggerZipDownload(state.zipUrl);
+    log("Downloading soulcalibur2_nx_package.zip again...", "ok");
+    return;
+  }
   state.isBuilding = true;
-  const btn = $("btn-build-zip");
-  btn.textContent = "⏳ Building Switch Package...";
   updateUI();
   try {
     const guests = await buildGuestsIfNeeded();
@@ -477,6 +511,7 @@ async function buildSwitchPackageZip() {
       } finally {
         await writable.close();
       }
+      state.packageBuilt = true;
       setProgress(100, "Switch package saved! Extract it to the root of your microSD card.");
       log("Done! soulcalibur2_nx_package.zip saved (switch/soulcalibur2/ structure).", "ok");
     } else {
@@ -485,14 +520,10 @@ async function buildSwitchPackageZip() {
         chunks.push(chunk);
       });
       const zipBlob = new Blob(chunks, { type: "application/zip" });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "soulcalibur2_nx_package.zip";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
+      state.zipUrl = URL.createObjectURL(zipBlob);
+      state.packageBuilt = true;
+      triggerZipDownload(state.zipUrl);
       setProgress(100, "Switch package downloaded! Extract it to the root of your microSD card.");
       log("Done! soulcalibur2_nx_package.zip download started.", "ok");
     }
@@ -502,7 +533,6 @@ async function buildSwitchPackageZip() {
     }
   } finally {
     state.isBuilding = false;
-    btn.textContent = "⚡ Build Switch Package";
     updateUI();
   }
 }
