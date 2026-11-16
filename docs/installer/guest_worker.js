@@ -345,6 +345,169 @@ self.onmessage = async (ev) => {
       }
     };
 
+    const PS_F0 = new Int32Array([0, 60, 115, 98, 122]);
+    const PS_F1 = new Int32Array([0, 0, -52, -55, -60]);
+
+    self.__psAdpcmDecode = (dataProxy) => {
+      const buf = dataProxy.getBuffer("u8");
+      try {
+        const data = buf.data;
+        const maxFrames = Math.floor(data.length / 16);
+        const out = new Int16Array(maxFrames * 28);
+        let outLen = 0, s1 = 0, s2 = 0;
+        for (let at = 0; at + 15 < data.length; at += 16) {
+          const header = data[at];
+          const flags = data[at + 1];
+          const shift = header & 15;
+          const predictor = Math.min(4, header >> 4);
+          const f0 = PS_F0[predictor];
+          const f1 = PS_F1[predictor];
+          for (let i = 2; i < 16; i++) {
+            const b = data[at + i];
+            for (let k = 0; k < 2; k++) {
+              const nibble = k === 0 ? (b & 15) : (b >> 4);
+              let t = (nibble >= 8 ? nibble - 16 : nibble) << 12;
+              t >>= shift;
+              let value = t + ((s1 * f0 + s2 * f1) >> 6);
+              if (value < -32768) value = -32768;
+              else if (value > 32767) value = 32767;
+              out[outLen++] = value;
+              s2 = s1;
+              s1 = value;
+            }
+          }
+          if (flags & 1) break;
+        }
+        return out.subarray(0, outLen);
+      } finally {
+        buf.release();
+      }
+    };
+
+    self.__encodeRgbaRowsToDxt = (rowsProxy, width, height) => {
+      const rows = rowsProxy.toJs();
+      let opaque = true;
+      for (let y = 0; y < height && opaque; y++) {
+        const row = rows[y];
+        for (let x = 0; x < width; x++) {
+          if (row[x][3] !== 255) { opaque = false; break; }
+        }
+      }
+      const bw = Math.floor((width + 3) / 4);
+      const bh = Math.floor((height + 3) / 4);
+      const stride = opaque ? 8 : 16;
+      const out = new Uint8Array(bw * bh * stride);
+      const texR = new Uint8Array(16), texG = new Uint8Array(16), texB = new Uint8Array(16), texA = new Uint8Array(16);
+      const palR = new Int32Array(4), palG = new Int32Array(4), palB = new Int32Array(4);
+      const levels = new Int32Array(8);
+      let dst = 0;
+
+      for (let by = 0; by < height; by += 4) {
+        for (let bx = 0; bx < width; bx += 4) {
+          let k = 0;
+          let minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
+          let hiA = 0, loA = 255;
+          for (let y = 0; y < 4; y++) {
+            const row = rows[Math.min(by + y, height - 1)];
+            for (let x = 0; x < 4; x++) {
+              const px = row[Math.min(bx + x, width - 1)];
+              const r = px[0], g = px[1], b = px[2], a = px[3];
+              texR[k] = r; texG[k] = g; texB[k] = b; texA[k] = a;
+              k++;
+              if (r < minR) minR = r; if (r > maxR) maxR = r;
+              if (g < minG) minG = g; if (g > maxG) maxG = g;
+              if (b < minB) minB = b; if (b > maxB) maxB = b;
+              if (a > hiA) hiA = a; if (a < loA) loA = a;
+            }
+          }
+
+          if (!opaque) {
+            out[dst] = hiA;
+            out[dst + 1] = loA;
+            if (hiA !== loA) {
+              levels[0] = hiA; levels[1] = loA;
+              for (let i = 1; i < 7; i++) levels[i + 1] = Math.floor(((7 - i) * hiA + i * loA) / 7);
+              let bLo = 0, bHi = 0;
+              for (let n = 0; n < 16; n++) {
+                const v = texA[n];
+                let bestI = 0, bestD = Math.abs(levels[0] - v);
+                for (let i = 1; i < 8; i++) {
+                  const d = Math.abs(levels[i] - v);
+                  if (d < bestD) { bestD = d; bestI = i; }
+                }
+                const bp = 3 * n;
+                if (bp < 24) bLo |= (bestI << bp);
+                else bHi |= (bestI << (bp - 24));
+              }
+              out[dst + 2] = bLo & 0xff; out[dst + 3] = (bLo >> 8) & 0xff; out[dst + 4] = (bLo >> 16) & 0xff;
+              out[dst + 5] = bHi & 0xff; out[dst + 6] = (bHi >> 8) & 0xff; out[dst + 7] = (bHi >> 16) & 0xff;
+            }
+            dst += 8;
+          }
+
+          const spanR = maxR - minR, spanG = maxG - minG, spanB = maxB - minB;
+          const texC = (spanR >= spanG && spanR >= spanB) ? texR : (spanG >= spanB ? texG : texB);
+          let maxIdx = 0, minIdx = 0;
+          for (let i = 1; i < 16; i++) {
+            if (texC[i] > texC[maxIdx]) maxIdx = i;
+            if (texC[i] < texC[minIdx]) minIdx = i;
+          }
+          let c0 = (((texR[maxIdx] * 31 + 127) / 255) | 0) << 11 | (((texG[maxIdx] * 63 + 127) / 255) | 0) << 5 | (((texB[maxIdx] * 31 + 127) / 255) | 0);
+          let c1 = (((texR[minIdx] * 31 + 127) / 255) | 0) << 11 | (((texG[minIdx] * 63 + 127) / 255) | 0) << 5 | (((texB[minIdx] * 31 + 127) / 255) | 0);
+          if (c0 < c1) { const tmp = c0; c0 = c1; c1 = tmp; }
+          out[dst] = c0 & 0xff; out[dst + 1] = (c0 >> 8) & 0xff;
+          out[dst + 2] = c1 & 0xff; out[dst + 3] = (c1 >> 8) & 0xff;
+          if (c0 !== c1) {
+            const r0 = (c0 >> 11) & 31, g0 = (c0 >> 5) & 63, b0 = c0 & 31;
+            const r1 = (c1 >> 11) & 31, g1 = (c1 >> 5) & 63, b1 = c1 & 31;
+            palR[0] = (r0 << 3) | (r0 >> 2); palG[0] = (g0 << 2) | (g0 >> 4); palB[0] = (b0 << 3) | (b0 >> 2);
+            palR[1] = (r1 << 3) | (r1 >> 2); palG[1] = (g1 << 2) | (g1 >> 4); palB[1] = (b1 << 3) | (b1 >> 2);
+            palR[2] = Math.floor((2 * palR[0] + palR[1]) / 3); palG[2] = Math.floor((2 * palG[0] + palG[1]) / 3); palB[2] = Math.floor((2 * palB[0] + palB[1]) / 3);
+            palR[3] = Math.floor((palR[0] + 2 * palR[1]) / 3); palG[3] = Math.floor((palG[0] + 2 * palG[1]) / 3); palB[3] = Math.floor((palB[0] + 2 * palB[1]) / 3);
+            let bits = 0;
+            for (let n = 0; n < 16; n++) {
+              const tr = texR[n], tg = texG[n], tb = texB[n];
+              let best = 0, bestErr = 1e9;
+              for (let i = 0; i < 4; i++) {
+                const dr = palR[i] - tr, dg = palG[i] - tg, db = palB[i] - tb;
+                const err = dr * dr + dg * dg + db * db;
+                if (err < bestErr) { bestErr = err; best = i; }
+              }
+              bits |= (best << (2 * n));
+            }
+            out[dst + 4] = bits & 0xff;
+            out[dst + 5] = (bits >>> 8) & 0xff;
+            out[dst + 6] = (bits >>> 16) & 0xff;
+            out[dst + 7] = (bits >>> 24) & 0xff;
+          }
+          dst += 8;
+        }
+      }
+      return [opaque ? 0x0c : 0x0f, out];
+    };
+
+    self.__swizzleRgba8Rows = (rowsProxy, width, height, sw, sh) => {
+      const rows = rowsProxy.toJs();
+      const pixels = new Uint8Array(sw * sh * 4);
+      for (let y = 0; y < height; y++) {
+        const row = rows[y];
+        for (let x = 0; x < width; x++) {
+          const px = row[x];
+          let swz = 0, bit = 0, xx = x, yy = y, ww = sw, hh = sh;
+          while (ww > 1 || hh > 1) {
+            if (ww > 1) { swz |= (xx & 1) << bit++; xx >>= 1; ww >>= 1; }
+            if (hh > 1) { swz |= (yy & 1) << bit++; yy >>= 1; hh >>= 1; }
+          }
+          const dst = swz * 4;
+          pixels[dst] = px[2];
+          pixels[dst + 1] = px[1];
+          pixels[dst + 2] = px[0];
+          pixels[dst + 3] = px[3];
+        }
+      }
+      return pixels;
+    };
+
     postProgress(35, "Building guests.olk (Link & Heihachi)...");
     postLog("Running roster.py (streaming Blob-backed Olnk + JS JIT accelerators)...");
 
@@ -355,11 +518,38 @@ sys.path.insert(0, "/work/scripts")
 import olnk
 import sound
 import textures
+import vmp2vmx
 import build_guest
 import roster
 
 sound.dsp_decode = lambda data, coefs, samples: js.__dspDecode(data, coefs, samples)
+sound.ps_adpcm_decode = lambda data: js.__psAdpcmDecode(data)
 sound.xbox_encode = lambda samples: bytes(js.__xboxEncode(samples).to_py())
+
+def _fast_vmp_dxt(rows, width, height):
+    res = js.__encodeRgbaRowsToDxt(rows, width, height)
+    return int(res[0]), bytes(res[1].to_py())
+
+vmp2vmx._dxt = _fast_vmp_dxt
+
+def _fast_rgba8_bank(images):
+    count = len(images)
+    table = 0x14 + 0x24 * count
+    data_at = (table + 0x7f) & ~0x7f
+    out = bytearray(b"VXT." + bytes((2, 4, 2, 0)) + struct.pack("<IIII", count, 0x14, table, 0))
+    entries_b, data_b = bytearray(), bytearray()
+    for entry_flags, width, height, rows in images:
+        sw, sh = 1 << (width - 1).bit_length(), 1 << (height - 1).bit_length()
+        pixels = bytes(js.__swizzleRgba8Rows(rows, width, height, sw, sh).to_py())
+        entries_b += struct.pack("<9I", entry_flags, 0, height << 16 | width, data_at + len(data_b), textures.D3D_A8R8G8B8,
+                                 sh << 16 | sw, 1, 0, 0)
+        data_b += pixels
+        data_b += bytes(-len(data_b) & 0x7f)
+    out = (out + entries_b)[:table]
+    out += bytes(data_at - len(out))
+    return bytes(out + data_b)
+
+textures.rgba8_bank = _fast_rgba8_bank
 
 _orig_convert_texture = textures.convert_texture
 def _fast_convert_texture(vgt, base, entry):
