@@ -208,6 +208,25 @@ async function handleXboxInput(fileList) {
             }
           }
         }
+        if (window.crypto && crypto.subtle) {
+          const xbeBytes = await file.slice(xbeEntry.offset, xbeEntry.offset + xbeEntry.size).arrayBuffer();
+          const hashBuf = await crypto.subtle.digest("SHA-256", xbeBytes);
+          const xbeSha = Array.from(new Uint8Array(hashBuf))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+          const EXPECTED_USA_XBE_SHA256 = "7ce12851850ab46766f77c612b251afe7c8bd81f879e11b4836bdf766be542c6";
+          if (xbeSha !== EXPECTED_USA_XBE_SHA256) {
+            for (const k of Object.keys(state.xbox)) state.xbox[k] = null;
+            const msg =
+              `This Xbox ISO's Default.xbe does not match Soulcalibur II USA (NTSC-U) Retail ` +
+              `(got SHA-256 ${xbeSha.slice(0, 12)}..., expected ${EXPECTED_USA_XBE_SHA256.slice(0, 12)}...). ` +
+              `Patched, region-free, PAL, or JPN discs are not supported.`;
+            log(msg, "error");
+            showRegionPopup("Unsupported Xbox ISO", msg);
+            updateUI();
+            return;
+          }
+        }
       }
       log(`Xbox ISO parsed: ${foundCount}/4 files ready.`, "ok");
       state.guestsBlob = null;
