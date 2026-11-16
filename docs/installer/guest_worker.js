@@ -220,29 +220,65 @@ def _hook_open(path, mode="r", *a, **kw):
     return _orig_open(path, mode, *a, **kw)
 
 _orig_link_block = build_guest.link_block
+_orig_link_costume = build_guest._link_costume
+_orig_weapon = build_guest._weapon
+_orig_link_rest = build_guest._link_rest
 _orig_guest_ui = build_guest.guest_ui
 _orig_hei_block = build_guest.heihachi_block
+_orig_ps2_weapon = build_guest._ps2_weapon
 _orig_hei_ui = build_guest.heihachi_ui
 
+_state_prog = {"costume": 0, "weapon": 0, "ps2_weapon": 0}
+
 def _wrap_link_block(*a, **kw):
-    js.__postProgress(40, "Converting Link (models, moves, sounds)...")
+    _state_prog["costume"] = 0
+    _state_prog["weapon"] = 0
+    js.__postProgress(38, "Converting Link (models, moves, sounds)...")
     return _orig_link_block(*a, **kw)
 
+def _wrap_link_costume(*a, **kw):
+    _state_prog["costume"] += 1
+    n = _state_prog["costume"]
+    js.__postProgress(38 + n * 2, f"Converting Link costume {n}/4...")
+    return _orig_link_costume(*a, **kw)
+
+def _wrap_weapon(*a, **kw):
+    _state_prog["weapon"] += 1
+    n = _state_prog["weapon"]
+    if n > 4:  # first 4 are inside costumes
+        js.__postProgress(46 + min(8, (n - 4) * 0.6), f"Converting Link weapon {n - 4}/12...")
+    return _orig_weapon(*a, **kw)
+
+def _wrap_link_rest(*a, **kw):
+    js.__postProgress(46, "Converting Link weapons, movesets & sound banks...")
+    return _orig_link_rest(*a, **kw)
+
 def _wrap_guest_ui(*a, **kw):
-    js.__postProgress(52, "Converting Link (UI & gallery textures)...")
+    js.__postProgress(56, "Converting Link (UI & gallery textures)...")
     return _orig_guest_ui(*a, **kw)
 
 def _wrap_hei_block(*a, **kw):
+    _state_prog["ps2_weapon"] = 0
     js.__postProgress(60, "Converting Heihachi (models & sounds)...")
     return _orig_hei_block(*a, **kw)
 
+def _wrap_ps2_weapon(*a, **kw):
+    _state_prog["ps2_weapon"] += 1
+    n = _state_prog["ps2_weapon"]
+    js.__postProgress(60 + min(10, n * 0.7), f"Converting Heihachi weapon/part {n}...")
+    return _orig_ps2_weapon(*a, **kw)
+
 def _wrap_hei_ui(*a, **kw):
-    js.__postProgress(70, "Converting Heihachi (UI & gallery textures)...")
+    js.__postProgress(72, "Converting Heihachi (UI & gallery textures)...")
     return _orig_hei_ui(*a, **kw)
 
 build_guest.link_block = _wrap_link_block
+build_guest._link_costume = _wrap_link_costume
+build_guest._weapon = _wrap_weapon
+build_guest._link_rest = _wrap_link_rest
 build_guest.guest_ui = _wrap_guest_ui
 build_guest.heihachi_block = _wrap_hei_block
+build_guest._ps2_weapon = _wrap_ps2_weapon
 build_guest.heihachi_ui = _wrap_hei_ui
 
 builtins.open = _hook_open
