@@ -217,8 +217,8 @@ builtins.open = _hook_open
 try:
     roster.build_roster(
         "/work/xb/root.olk",
-        "/work/gc/root.olk" if ${Boolean(gcRoot)} else None,
-        "/work/ps2/root.olk" if ${Boolean(ps2Root)} else None,
+        "/work/gc/root.olk" if ${gcRoot ? "True" : "False"} else None,
+        "/work/ps2/root.olk" if ${ps2Root ? "True" : "False"} else None,
         "/work/guests.olk",
     )
 finally:
