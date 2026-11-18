@@ -49,6 +49,7 @@ D3dCapturePacket::D3dCapturePacket()
     // Pre-reserve buffers to eliminate reallocations during frame submission
     entries_.reserve(2048);
     commands_.reserve(2048);
+    tex_xforms_.reserve(256);
 }
 
 RecompD3dPresenterError D3dCapturePacket::add(
@@ -73,6 +74,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
     const size_t old_payload_size = payload_.size();
     const size_t old_command_count = commands_.size();
     const size_t old_entry_count = entries_.size();
+    const size_t old_tex_xform_count = tex_xforms_.size();
     try {
         CapturedCommand &captured = commands_.emplace_back();
         copyCommand(captured.value, command);
@@ -99,7 +101,13 @@ RecompD3dPresenterError D3dCapturePacket::add(
                 captured.offsets[i] = offset;
             }
         }
-        entries_.push_back({{COMMAND, 0u, 0u}, old_command_count});
+        uint32_t xf_id = 0u;
+        SwitchTexXform xf;
+        if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW && Switch_ConsumePendingTexXform(&xf)) {
+            tex_xforms_.push_back(xf);
+            xf_id = static_cast<uint32_t>(tex_xforms_.size());
+        }
+        entries_.push_back({{COMMAND, xf_id, 0u}, old_command_count});
         return RECOMP_D3D_PRESENTER_OK;
     } catch (const std::bad_alloc &) {
     } catch (const std::length_error &) {
@@ -107,6 +115,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     entries_.resize(old_entry_count);
     commands_.resize(old_command_count);
+    tex_xforms_.resize(old_tex_xform_count);
     payload_.truncate(old_payload_size);
     return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
 }
@@ -187,10 +196,16 @@ const RecompD3dPresenterCommand &D3dCapturePacket::command(size_t index) const
     return commands_[entries_[index].command_index].value;
 }
 
+const SwitchTexXform *D3dCapturePacket::texXform(size_t index) const
+{
+    return (index < tex_xforms_.size()) ? &tex_xforms_[index] : nullptr;
+}
+
 void D3dCapturePacket::clear()
 {
     entries_.clear();
     commands_.clear();
+    tex_xforms_.clear();
     payload_.clear();
     sealed_ = false;
 }

@@ -36,6 +36,7 @@ struct WorkerJob {
     JobType type;
     uint32_t direct_index_smallest;
     RecompD3dPresenter *presenter;
+    SwitchTexXform tex_xform;
     union {
         RecompD3dPresenterCommand direct;
         SwitchGatherDrawJob gather;
@@ -510,7 +511,9 @@ void workerLoop()
                 d.index_bytes = dst;
             }
             const bool is_present = (job.data.direct.type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT);
+            if (job.tex_xform.active) Switch_SetPendingTexXform(&job.tex_xform);
             Switch_PresenterSubmitDirect(job.presenter, &job.data.direct);
+            Switch_SetPendingTexXform(nullptr);
             if (is_present) {
                 g_worker.frames_completed.fetch_add(1u, std::memory_order_release);
                 if (g_worker.frame_waiter.load(std::memory_order_seq_cst)) {
@@ -522,7 +525,9 @@ void workerLoop()
         }
         case JOB_GATHER_DRAW:
             ++s_prof_gather_cnt;
+            if (job.tex_xform.active) Switch_SetPendingTexXform(&job.tex_xform);
             executeGatherDraw(job.presenter, job.data.gather);
+            Switch_SetPendingTexXform(nullptr);
             break;
         case JOB_PUSH_SHADOW:
             ++s_prof_push_cnt;
@@ -665,6 +670,7 @@ bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3
     WorkerJob &job = g_worker.jobs[slot];
     job.type = JOB_DIRECT;
     job.direct_index_smallest = 0u;
+    job.tex_xform.active = false;
     job.presenter = presenter;
     copyPresenterCommand(&job.data.direct, cmd);
     if (cmd->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
@@ -704,9 +710,21 @@ RecompD3dPresenterCommand *Switch_D3dWorkerBeginDraw(
     const uint32_t slot = acquireJobSlot();
     WorkerJob &job = g_worker.jobs[slot];
     job.presenter = presenter;
+    job.tex_xform.active = false;
     *out_slot = slot;
     if (out_gather) *out_gather = &job.data.gather;
     return &job.data.direct;
+}
+
+void Switch_D3dWorkerSetDrawTexXform(uint32_t slot, const SwitchTexXform *xf)
+{
+    if (!g_worker.active) return;
+    WorkerJob &job = g_worker.jobs[slot];
+    if (xf && xf->active) {
+        job.tex_xform = *xf;
+    } else {
+        job.tex_xform.active = false;
+    }
 }
 
 bool Switch_D3dWorkerCommitDraw(uint32_t slot, uint64_t tq0, bool is_gather, bool copy_vtx, uint32_t index_smallest)

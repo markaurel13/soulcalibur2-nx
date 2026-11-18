@@ -11,7 +11,10 @@
 #include "scene_freeze_adapter.h"
 #include "stop_report.h"
 #include "switch_d3d_worker.h"
+#include "switch_tex_xform.h"
 #include "xapi_time_adapter.h"
+
+extern uint32_t sc2_scene;
 
 #include <inttypes.h>
 
@@ -2477,8 +2480,6 @@ static void general_fixed_stages(uint32_t device, const RecompD3dVertexLayout *l
         out->result_arg = state[20] == RECOMP_D3DTA_TEMP ? RECOMP_D3DTA_TEMP : RECOMP_D3DTA_CURRENT;
         /* A program's oTn feeds stage n; fixed function reads TEXCOORDINDEX. */
         out->texcoord = program_draw ? i : state[28] & 0xffffu;
-        if (!program_draw && ((state[28] >> 16u) != 0u || state[21] != 0u))
-            recomp_stop(2, "d3d8:general-texcoord:stage=%u:%08x:%u", i, state[28], state[21]);
         out->alpha_kill = state[11] == 4u;
         s_fs_stages[i] = *out;
         memcpy(s_fs_s11_21[i], &state[11], 11u * sizeof(uint32_t));
@@ -2734,6 +2735,78 @@ static inline void get_cached_target(uint32_t device, RecompD3dPresenterTarget *
         s_tgt_valid = true;
     }
     *out = s_cached_tgt;
+}
+
+static void build_tex_xform(uint32_t device, const RecompD3dVertexLayout *layout,
+    RecompD3dPresenterDrawCommand *draw, SwitchTexXform *xf)
+{
+    xf->active = false;
+    if (layout->pretransformed || draw->program_count != 0u || layout->texcoord_count > 2u) return;
+
+    xf->stage_ctrl[0] = 0u;
+    xf->stage_ctrl[1] = 1u;
+    xf->normalize_normals = (*recomp_memory_u32(0x0015e5c8u) != 0u) ? 1u : 0u;
+
+    const uint32_t *stage_base = recomp_memory_u32(STAGES);
+    bool need_mv = false;
+    bool need_norm = false;
+    bool any_xform = false;
+
+    for (uint32_t i = 0u; i < 2u; ++i) {
+        const uint32_t *st = stage_base + i * 32u;
+        const uint32_t set = st[28] & 0xffffu;
+        const uint32_t kind = st[28] >> 16u;
+        const uint32_t flags = st[21];
+        if (draw->pixel_program.stages[i].sampled) {
+            uint32_t uv_src = (set < layout->texcoord_count) ? set : 0u;
+            xf->stage_ctrl[i] = uv_src;
+            if (flags == 2u) {
+                float m[16];
+                recomp_guest_load(m, device + 0x8c0u + i * 0x40u, sizeof m);
+                bool finite = true;
+                for (uint32_t k = 0u; k < 16u; ++k) {
+                    if ((k % 4u) <= 1u && !isfinite(m[k])) { finite = false; break; }
+                }
+                if (finite) {
+                    if (kind == 0u) {
+                        bool identity = (m[0] == 1.0f && m[1] == 0.0f && m[4] == 0.0f &&
+                                         m[5] == 1.0f && m[8] == 0.0f && m[9] == 0.0f);
+                        if (!identity && layout->texcoord_count > 0u) {
+                            memcpy(xf->tex_mat[i], m, sizeof m);
+                            xf->stage_ctrl[i] = uv_src | 4u;
+                            draw->pixel_program.stages[i].texcoord = i;
+                            any_xform = true;
+                        }
+                    } else if (kind <= 3u && (kind == 2u || layout->normal_offset != RECOMP_D3D_FVF_ABSENT)) {
+                        memcpy(xf->tex_mat[i], m, sizeof m);
+                        xf->stage_ctrl[i] = uv_src | 4u | ((kind & 3u) << 4u);
+                        draw->pixel_program.stages[i].texcoord = i;
+                        any_xform = true;
+                        if (kind == 1u || kind == 3u) need_norm = true;
+                        if (kind == 2u || kind == 3u) need_mv = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!any_xform) return;
+
+    if (need_mv || (need_norm && !draw->directional.enabled)) {
+        if (model_view_active) {
+            memcpy(xf->mv, model_view, sizeof xf->mv);
+        } else {
+            const float *world = (const float *)recomp_memory(device + 0x9c0u, 64u);
+            const float *view = (const float *)recomp_memory(device + 0x840u, 64u);
+            multiply(world, view, xf->mv, "tex-xform-mv");
+        }
+        if (need_norm && !draw->directional.enabled) {
+            if (!recomp_d3d_normal_adjugate(xf->mv, draw->directional.normal_transforms[0], NULL)) {
+                recomp_d3d_normal_transform(xf->mv, draw->directional.normal_transforms[0]);
+            }
+        }
+    }
+    xf->active = true;
 }
 
 static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
@@ -3224,8 +3297,11 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     ++s_prof_draws;
 
     cmd_ptr->type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    SwitchTexXform xf;
+    build_tex_xform(device, &layout, draw, &xf);
     if (offload_gather) {
         if (use_worker_slot) {
+            if (xf.active) Switch_D3dWorkerSetDrawTexXform(worker_slot, &xf);
             Switch_D3dWorkerCommitDraw(worker_slot, worker_tq0, true, false, 0u);
         } else if (!Switch_D3dWorkerEnqueueGatherDraw(active_presenter, cmd_ptr, gjob)) {
             Switch_D3dWorkerFlush();
@@ -3249,6 +3325,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
             recomp_scene_freeze_overlay_hidden())) {
         if (use_worker_slot) {
             const bool copy_vtx = !(gather_first != UINT32_MAX && packed == NULL && expanded == NULL);
+            if (xf.active) Switch_D3dWorkerSetDrawTexXform(worker_slot, &xf);
             if (!Switch_D3dWorkerCommitDraw(worker_slot, worker_tq0, false, copy_vtx, direct_idx_smallest)) {
                 Switch_D3dWorkerFlush();
                 if (direct_idx_smallest != 0u && count <= 65536u) {
@@ -3256,10 +3333,14 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
                     for (uint32_t i = 0u; i < count; ++i) s_shifted_indices[i] = (uint16_t)(src_idx[i] - direct_idx_smallest);
                     draw->index_bytes = s_shifted_indices;
                 }
+                Switch_SetPendingTexXform(&xf);
                 recomp_d3d8_submit(cmd_ptr);
+                Switch_SetPendingTexXform(NULL);
             }
         } else {
+            Switch_SetPendingTexXform(&xf);
             recomp_d3d8_submit(cmd_ptr);
+            Switch_SetPendingTexXform(NULL);
         }
     }
     ++draw_submitted;

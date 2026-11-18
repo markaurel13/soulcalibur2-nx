@@ -2,6 +2,7 @@
 #define SWITCH_D3D_WORKER_H
 
 #include "d3d_presenter.h"
+#include "switch_tex_xform.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -48,6 +49,7 @@ typedef struct SwitchPushShadowJob {
 
 void Switch_D3dWorkerInit(void);
 void Switch_D3dWorkerShutdown(void);
+void Switch_D3dWorkerSetDrawTexXform(uint32_t slot, const SwitchTexXform *xf);
 bool Switch_D3dWorkerIsActive(void);
 
 bool Switch_D3dWorkerEnqueueDirect(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *cmd);

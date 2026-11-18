@@ -96,7 +96,13 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                     std::lock_guard<std::mutex> lock(thread.mutex);
                     thread.covered = covered;
                 } else {
+                    if (record.base != 0u) {
+                        Switch_SetPendingTexXform(packet.texXform(record.base - 1u));
+                    }
                     error = d3d_backend_submit(backend, &command);
+                    if (record.base != 0u) {
+                        Switch_SetPendingTexXform(nullptr);
+                    }
                 }
                 break;
             }

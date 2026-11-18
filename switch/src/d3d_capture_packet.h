@@ -2,6 +2,7 @@
 #define SWITCH_D3D_CAPTURE_PACKET_H
 
 #include "d3d_presenter.h"
+#include "switch_tex_xform.h"
 
 #include <cstddef>
 #include <cstdlib>
@@ -31,6 +32,7 @@ public:
     size_t count() const;
     const Record &record(size_t index) const;
     const RecompD3dPresenterCommand &command(size_t index) const;
+    const SwitchTexXform *texXform(size_t index) const;
     void clear();
     uint64_t bytes() const;
 
@@ -108,6 +110,7 @@ private:
 
     std::vector<Entry> entries_;
     std::vector<CapturedCommand> commands_;
+    std::vector<SwitchTexXform> tex_xforms_;
     PayloadArena payload_;
     bool sealed_ = false;
 };

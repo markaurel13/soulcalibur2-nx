@@ -177,6 +177,7 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_input.cpp
     src/switch_fs.cpp
     src/d3d_presenter_deko3d.cpp
+    src/switch_tex_xform.cpp
     src/switch_imgui_menu.cpp
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp

@@ -2,6 +2,8 @@
 #include "d3d_draw_model.h"
 #include "sc2_shaders.h"
 #include "sc2_ff_shaders.h"
+#include "sc2_ff_vsh_shader.h"
+#include "switch_tex_xform.h"
 #include "font8x8.h"
 #include "switch_watchdog.h"
 #include "switch_core_manager.h"
@@ -115,6 +117,7 @@ struct PerfStats {
     uint32_t verts_pre = 0, verts_prog = 0, verts_ff = 0, verts_skin = 0;
     uint32_t verts_ff_gpu = 0, verts_ff_cpu = 0;
     uint32_t fsh_null = 0, fsh_null_alpha_count = 0, fsh_fast = 0, fsh_comb2 = 0, fsh_gen = 0, fsh_comb_fast_count = 0;
+    uint32_t tex_xform_mat = 0, tex_xform_gen = 0;
     uint32_t comb_stages[9] = {};
     uint32_t slow_frames = 0; // wall > 20 ms
     uint32_t max_draws = 0;
@@ -245,6 +248,10 @@ struct alignas(256) VtxBlock {
     uint32_t u_light_ctrl[4];
     float u_fog_params[4];
     float u_fog_planes[4][4];
+    float u_mv_mat[4][4];
+    float u_tex_mat0[4][4];
+    float u_tex_mat1[4][4];
+    uint32_t u_tex_ctrl[4];
 };
 
 static void initVtxAttribsFF(DkVtxAttribState attribs[5]) {
@@ -298,6 +305,7 @@ static const DkVtxBufferState s_bufferStateFF[] = {
 static void populateVtxBlock(const RecompD3dPresenterDrawCommand &draw,
                              float dx_offset, float dy_offset,
                              bool has_normal, bool has_fog, bool range_fog,
+                             const SwitchTexXform *xf,
                              VtxBlock *vbo) {
     memset(vbo, 0, sizeof(*vbo));
 
@@ -365,6 +373,17 @@ static void populateVtxBlock(const RecompD3dPresenterDrawCommand &draw,
     }
     vbo->u_fog_planes[3][0] = range_fog ? 1.0f : 0.0f;
     vbo->u_fog_planes[3][1] = draw.general_fog[2][0];
+
+    vbo->u_tex_ctrl[0] = 0u;
+    vbo->u_tex_ctrl[1] = 1u;
+    if (xf && xf->active) {
+        memcpy(vbo->u_mv_mat, xf->mv, sizeof(vbo->u_mv_mat));
+        memcpy(vbo->u_tex_mat0, xf->tex_mat[0], sizeof(vbo->u_tex_mat0));
+        memcpy(vbo->u_tex_mat1, xf->tex_mat[1], sizeof(vbo->u_tex_mat1));
+        vbo->u_tex_ctrl[0] = xf->stage_ctrl[0];
+        vbo->u_tex_ctrl[1] = xf->stage_ctrl[1];
+        vbo->u_tex_ctrl[2] = xf->normalize_normals;
+    }
 }
 
 struct alignas(256) FragBlock {
@@ -2246,11 +2265,11 @@ RecompD3dPresenterError d3d_backend_create(
     code_offset += (sizeof(sc2_basic_vsh_dksh) + DK_SHADER_CODE_ALIGNMENT - 1) & ~(DK_SHADER_CODE_ALIGNMENT - 1);
 
     // Vertex Shader (Fixed-Function GPU)
-    memcpy(code_cpu + code_offset, sc2_ff_vsh_dksh, sizeof(sc2_ff_vsh_dksh));
+    memcpy(code_cpu + code_offset, sc2_ff_vsh_gpu_dksh, sizeof(sc2_ff_vsh_gpu_dksh));
     DkShaderMaker vshFFMaker;
     dkShaderMakerDefaults(&vshFFMaker, p->block_code, code_offset);
     dkShaderInitialize(&p->vsh_ff, &vshFFMaker);
-    code_offset += (sizeof(sc2_ff_vsh_dksh) + DK_SHADER_CODE_ALIGNMENT - 1) & ~(DK_SHADER_CODE_ALIGNMENT - 1);
+    code_offset += (sizeof(sc2_ff_vsh_gpu_dksh) + DK_SHADER_CODE_ALIGNMENT - 1) & ~(DK_SHADER_CODE_ALIGNMENT - 1);
 
     // Fragment Shader (Null for pure depth/stencil passes with color_mask == 0 and no alpha test)
     memcpy(code_cpu + code_offset, sc2_null_fsh_dksh, sizeof(sc2_null_fsh_dksh));
@@ -3283,10 +3302,17 @@ RecompD3dPresenterError d3d_backend_submit(
         const bool need_frag_ubo = !(presenter->last_frag_ubo_valid &&
             std::memcmp(&presenter->last_frag_ubo, &tmp_frag, sizeof(FragBlock)) == 0);
 
+        SwitchTexXform xf{};
+        Switch_ConsumePendingTexXform(&xf);
+        if (xf.active) {
+            if (((xf.stage_ctrl[0] >> 4u) & 3u) || ((xf.stage_ctrl[1] >> 4u) & 3u)) ++g_perf.tex_xform_gen;
+            else ++g_perf.tex_xform_mat;
+        }
+
         VtxBlock tmp_vtx;
         bool need_vtx_ubo = false;
         if (use_gpu_vtx) {
-            populateVtxBlock(draw, dx_offset, dy_offset, has_normal, has_fog, range_fog, &tmp_vtx);
+            populateVtxBlock(draw, dx_offset, dy_offset, has_normal, has_fog, range_fog, &xf, &tmp_vtx);
             need_vtx_ubo = !(presenter->last_vtx_ubo_valid &&
                 std::memcmp(&presenter->last_vtx_ubo, &tmp_vtx, sizeof(VtxBlock)) == 0);
         }
@@ -4439,12 +4465,13 @@ RecompD3dPresenterError d3d_backend_submit(
                     g_hd_prof = {};
                 }
                 printf("[Perf] per-frame load: draws=%.0f (max %u) verts=%.0f idx=%.0f vtx_mb=%.2f | paths(draws): pre=%u prog=%u ff=%u (gpu=%u cpu=%u) skin=%u lit=%u"
-                       " | verts: pre=%u prog=%u ff=%u skin=%u | fsh: null=%u(alpha=%u) fast=%u comb2=%u gen=%u\n",
+                       " | verts: pre=%u prog=%u ff=%u skin=%u | fsh: null=%u(alpha=%u) fast=%u comb2=%u gen=%u | tex_xf: mat=%u gen=%u\n",
                        g_perf.draws / n, g_perf.max_draws, g_perf.verts / n, g_perf.idx / n,
                        (double)g_perf.dyn_bytes / n / (1024.0 * 1024.0),
                        g_perf.path_pre, g_perf.path_prog, g_perf.path_ff, g_perf.verts_ff_gpu, g_perf.verts_ff_cpu, g_perf.path_skin, g_perf.path_lit,
                        g_perf.verts_pre, g_perf.verts_prog, g_perf.verts_ff, g_perf.verts_skin,
-                       g_perf.fsh_null, g_perf.fsh_null_alpha_count, g_perf.fsh_fast, g_perf.fsh_comb2, g_perf.fsh_gen);
+                       g_perf.fsh_null, g_perf.fsh_null_alpha_count, g_perf.fsh_fast, g_perf.fsh_comb2, g_perf.fsh_gen,
+                       g_perf.tex_xform_mat, g_perf.tex_xform_gen);
                 printf("[Perf] combiners breakdown: 0=%u 1=%u 2=%u 3=%u 4=%u 5=%u 6=%u 7=%u 8=%u\n",
                        g_perf.comb_stages[0], g_perf.comb_stages[1], g_perf.comb_stages[2],
                        g_perf.comb_stages[3], g_perf.comb_stages[4], g_perf.comb_stages[5],
