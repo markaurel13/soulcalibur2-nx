@@ -384,6 +384,7 @@ struct CachedTexture {
     uint32_t desc_slot; // 1 .. MAX_IMAGE_DESCS - 1
     int hash_next;
     uint64_t hd_key;
+    uint64_t hd_pending_gen;
     bool hd_pending;
     int hd_hash_next;
     DkImage image;
@@ -469,6 +470,12 @@ struct RecompD3dPresenter {
     DkGpuAddr dyn_gpu[NUM_CMD_SLOTS];
     uint32_t dyn_offset;
     uint32_t cur_cmd_slot;
+    FragBlock last_frag_ubo;
+    VtxBlock last_vtx_ubo;
+    DkGpuAddr last_frag_ubo_gpu;
+    DkGpuAddr last_vtx_ubo_gpu;
+    bool last_frag_ubo_valid;
+    bool last_vtx_ubo_valid;
 
     // Guest resolution (640x480 or 720x480) vs Host resolution (1280x720)
     uint32_t guest_width;
@@ -928,11 +935,16 @@ public:
     }
 
     void ensureStarted() {
+        if (started_.load(std::memory_order_acquire)) return;
         std::lock_guard<std::mutex> lk(mtx_);
-        if (!started_) {
-            started_ = true;
+        if (!started_.load(std::memory_order_relaxed)) {
+            started_.store(true, std::memory_order_release);
             worker_ = std::thread([this]() { workerLoop(); });
         }
+    }
+
+    uint64_t completedGen() const {
+        return completed_gen_.load(std::memory_order_acquire);
     }
 
     bool requestOrGet(uint64_t key, std::shared_ptr<const HdDdsEntry> &out, bool &is_pending) {
@@ -1005,6 +1017,7 @@ private:
             std::lock_guard<std::mutex> lk(mtx_);
             index_map_.swap(local_idx);
             index_ready_ = true;
+            completed_gen_.fetch_add(1, std::memory_order_release);
             printf("[HdAsync] Indexed %zu DDS files in %s\n", index_map_.size(), kTexturesDir);
         }
 
@@ -1086,6 +1099,7 @@ private:
                     }
                 }
                 queued_or_loading_.erase(key);
+                completed_gen_.fetch_add(1, std::memory_order_release);
             }
         }
     }
@@ -1093,7 +1107,8 @@ private:
     std::mutex mtx_;
     std::condition_variable cv_;
     std::thread worker_;
-    bool started_ = false;
+    std::atomic<bool> started_{false};
+    std::atomic<uint64_t> completed_gen_{0};
     bool stop_ = false;
     bool index_ready_ = false;
     std::unordered_map<uint64_t, std::string> index_map_;
@@ -1261,22 +1276,27 @@ static uint32_t lookupOrUploadSingleTexture(
             ct.width == desc.width && ct.height == desc.height && ct.fingerprint == fp) {
             if (!palettized || memcmp(ct.palette, pal_bytes, PALETTE_BYTES) == 0) {
                 if (ct.hd_pending && hd_active && ct.hd_key != 0u) {
-                    std::shared_ptr<const HdDdsEntry> entry;
-                    bool still_pending = false;
-                    uint64_t t_io0 = perfNow();
-                    bool ready = g_hd_loader.requestOrGet(ct.hd_key, entry, still_pending);
-                    uint64_t t_io1 = perfNow();
-                    g_hd_prof.io_ns += (t_io1 - t_io0);
-                    if (!still_pending) {
-                        uint64_t upgrade_key = ct.hd_key;
-                        ct.hd_pending = false;
-                        if (ready && entry) {
-                            uint64_t t_up0 = perfNow();
-                            uint32_t hd_slot = uploadHdReplacement(p, desc, fmt, palettized, pal_bytes, fp, h, upgrade_key, entry->rep);
-                            uint64_t t_up1 = perfNow();
-                            g_hd_prof.up_ns += (t_up1 - t_up0);
-                            g_hd_prof.hd_hits++;
-                            if (hd_slot != 0u) return hd_slot;
+                    uint64_t cur_gen = g_hd_loader.completedGen();
+                    if (cur_gen != ct.hd_pending_gen) {
+                        std::shared_ptr<const HdDdsEntry> entry;
+                        bool still_pending = false;
+                        uint64_t t_io0 = perfNow();
+                        bool ready = g_hd_loader.requestOrGet(ct.hd_key, entry, still_pending);
+                        uint64_t t_io1 = perfNow();
+                        g_hd_prof.io_ns += (t_io1 - t_io0);
+                        if (!still_pending) {
+                            uint64_t upgrade_key = ct.hd_key;
+                            ct.hd_pending = false;
+                            if (ready && entry) {
+                                uint64_t t_up0 = perfNow();
+                                uint32_t hd_slot = uploadHdReplacement(p, desc, fmt, palettized, pal_bytes, fp, h, upgrade_key, entry->rep);
+                                uint64_t t_up1 = perfNow();
+                                g_hd_prof.up_ns += (t_up1 - t_up0);
+                                g_hd_prof.hd_hits++;
+                                if (hd_slot != 0u) return hd_slot;
+                            }
+                        } else {
+                            ct.hd_pending_gen = cur_gen;
                         }
                     }
                 }
@@ -1285,6 +1305,7 @@ static uint32_t lookupOrUploadSingleTexture(
         }
     }
     uint64_t pending_hd_key = 0u;
+    uint64_t pending_hd_gen = 0u;
     if (hd_active) {
         uint64_t t_k0 = perfNow();
         uint64_t hd_key = recomp_d3d_texture_key(&desc, tex_bytes, tex_byte_count, pal_bytes);
@@ -1296,11 +1317,32 @@ static uint32_t lookupOrUploadSingleTexture(
             for (int hidx = p->hd_hash_head[hh]; hidx != -1; hidx = p->tex_cache[hidx].hd_hash_next) {
                 const CachedTexture &hct = p->tex_cache[hidx];
                 if (hct.used && hct.hd_key == hd_key && !hct.hd_pending) {
-                    return hct.desc_slot;
+                    uint32_t target_slot = hct.desc_slot;
+                    uint32_t alias_idx = p->next_cache_slot;
+                    p->next_cache_slot = (p->next_cache_slot + 1) % MAX_TEX_CACHE;
+                    if ((int)alias_idx != hidx) {
+                        removeTexSlotFromHash(p, (int)alias_idx);
+                        CachedTexture &act = p->tex_cache[alias_idx];
+                        act.used = true;
+                        act.data = desc.data;
+                        act.format_byte = fmt;
+                        act.width = desc.width;
+                        act.height = desc.height;
+                        act.fingerprint = fp;
+                        if (palettized) memcpy(act.palette, pal_bytes, PALETTE_BYTES);
+                        act.desc_slot = target_slot;
+                        act.hash_next = p->tex_hash_head[h];
+                        p->tex_hash_head[h] = (int)alias_idx;
+                        act.hd_key = 0;
+                        act.hd_pending = false;
+                        act.hd_hash_next = -1;
+                    }
+                    return target_slot;
                 }
             }
             std::shared_ptr<const HdDdsEntry> entry;
             bool is_pending = false;
+            uint64_t cur_gen = g_hd_loader.completedGen();
             uint64_t t_io0 = perfNow();
             bool ready = g_hd_loader.requestOrGet(hd_key, entry, is_pending);
             uint64_t t_io1 = perfNow();
@@ -1314,6 +1356,7 @@ static uint32_t lookupOrUploadSingleTexture(
                 if (hd_slot != 0u) return hd_slot;
             } else if (is_pending) {
                 pending_hd_key = hd_key;
+                pending_hd_gen = cur_gen;
             }
         }
     }
@@ -1384,6 +1427,7 @@ static uint32_t lookupOrUploadSingleTexture(
         ct.hash_next = p->tex_hash_head[h];
         p->tex_hash_head[h] = (int)cache_idx;
         ct.hd_key = pending_hd_key;
+        ct.hd_pending_gen = pending_hd_gen;
         ct.hd_pending = (pending_hd_key != 0u);
         ct.hd_hash_next = -1;
 
@@ -1579,6 +1623,7 @@ static uint32_t lookupOrUploadSingleTexture(
     ct.hash_next = p->tex_hash_head[h];
     p->tex_hash_head[h] = (int)cache_idx;
     ct.hd_key = pending_hd_key;
+    ct.hd_pending_gen = pending_hd_gen;
     ct.hd_pending = (pending_hd_key != 0u);
     ct.hd_hash_next = -1;
 
@@ -2113,6 +2158,8 @@ RecompD3dPresenterError d3d_backend_create(
     }
     p->cur_cmd_slot = 0;
     p->dyn_offset = 0;
+    p->last_frag_ubo_valid = false;
+    p->last_vtx_ubo_valid = false;
 
     // Allocate GPU Query Timestamps Buffer
     {
@@ -2378,6 +2425,8 @@ static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
         p->query_count[slot] = 0;
     }
     p->dyn_offset = 0;
+    p->last_frag_ubo_valid = false;
+    p->last_vtx_ubo_valid = false;
 
     {
         PerfScope ps(&g_perf.t_acquire);
@@ -2530,6 +2579,7 @@ static void drawFpsOverlay(RecompD3dPresenter *p, DkCmdBuf cmd, double fps, doub
     DkResHandle tex_handles[1] = { dkMakeTextureHandle(0, 0) };
     dkCmdBufBindTextures(cmd, DkStage_Fragment, 0, tex_handles, 1);
     dkCmdBufBindUniformBuffer(cmd, DkStage_Fragment, 0, dyn_gpu + ubo_off, sizeof(FragBlock));
+    p->last_frag_ubo_valid = false;
 
     DkRasterizerState rasterizerState;
     dkRasterizerStateDefaults(&rasterizerState);
@@ -3018,21 +3068,50 @@ RecompD3dPresenterError d3d_backend_submit(
 
         uint32_t vtx_size = draw.vertex_count * (use_gpu_vtx ? sizeof(DekoVertexFF) : sizeof(DekoVertex));
         uint32_t idx_size = (draw.index_bytes && draw.index_count > 0) ? (draw.index_count * sizeof(uint16_t)) : 0;
-        uint32_t ubo_size = sizeof(FragBlock);
-        uint32_t vbo_size = use_gpu_vtx ? sizeof(VtxBlock) : 0;
+
+        // 1. Uniforms with consecutive-draw dirty tracking
+        FragBlock tmp_frag;
+        bool is_fast_path = false;
+        populateFragBlock(draw, &tmp_frag, is_fast_path);
+        const bool need_frag_ubo = !(presenter->last_frag_ubo_valid &&
+            std::memcmp(&presenter->last_frag_ubo, &tmp_frag, sizeof(FragBlock)) == 0);
+
+        VtxBlock tmp_vtx;
+        bool need_vtx_ubo = false;
+        if (use_gpu_vtx) {
+            populateVtxBlock(draw, dx_offset, dy_offset, has_normal, has_fog, range_fog, &tmp_vtx);
+            need_vtx_ubo = !(presenter->last_vtx_ubo_valid &&
+                std::memcmp(&presenter->last_vtx_ubo, &tmp_vtx, sizeof(VtxBlock)) == 0);
+        }
+
+        uint32_t ubo_size = need_frag_ubo ? sizeof(FragBlock) : 0;
+        uint32_t vbo_size = need_vtx_ubo ? sizeof(VtxBlock) : 0;
 
         presenter->dyn_offset = (presenter->dyn_offset + 255u) & ~255u;
         if (presenter->dyn_offset + vtx_size + idx_size + ubo_size + vbo_size + 1024u > DYN_BUF_SIZE) {
             return RECOMP_D3D_PRESENTER_OK;
         }
 
-        uint32_t ubo_offset = presenter->dyn_offset;
-        presenter->dyn_offset += (ubo_size + 255u) & ~255u;
+        DkGpuAddr uboGpu = presenter->last_frag_ubo_gpu;
+        if (need_frag_ubo) {
+            uint32_t ubo_offset = presenter->dyn_offset;
+            presenter->dyn_offset += (sizeof(FragBlock) + 255u) & ~255u;
+            std::memcpy(dyn_cpu + ubo_offset, &tmp_frag, sizeof(FragBlock));
+            uboGpu = dyn_gpu + ubo_offset;
+            presenter->last_frag_ubo = tmp_frag;
+            presenter->last_frag_ubo_gpu = uboGpu;
+            presenter->last_frag_ubo_valid = true;
+        }
 
-        uint32_t vbo_offset = 0;
-        if (use_gpu_vtx) {
-            vbo_offset = presenter->dyn_offset;
-            presenter->dyn_offset += (vbo_size + 255u) & ~255u;
+        DkGpuAddr vboGpu = presenter->last_vtx_ubo_gpu;
+        if (need_vtx_ubo) {
+            uint32_t vbo_offset = presenter->dyn_offset;
+            presenter->dyn_offset += (sizeof(VtxBlock) + 255u) & ~255u;
+            std::memcpy(dyn_cpu + vbo_offset, &tmp_vtx, sizeof(VtxBlock));
+            vboGpu = dyn_gpu + vbo_offset;
+            presenter->last_vtx_ubo = tmp_vtx;
+            presenter->last_vtx_ubo_gpu = vboGpu;
+            presenter->last_vtx_ubo_valid = true;
         }
 
         uint32_t vtx_offset = presenter->dyn_offset;
@@ -3041,16 +3120,6 @@ RecompD3dPresenterError d3d_backend_submit(
         uint32_t idx_offset = presenter->dyn_offset;
         if (idx_size > 0) {
             presenter->dyn_offset += (idx_size + 255u) & ~255u;
-        }
-
-        // 1. Fragment Uniforms
-        FragBlock *fbo = (FragBlock*)(dyn_cpu + ubo_offset);
-        bool is_fast_path = false;
-        populateFragBlock(draw, fbo, is_fast_path);
-
-        if (use_gpu_vtx) {
-            VtxBlock *vbo = (VtxBlock*)(dyn_cpu + vbo_offset);
-            populateVtxBlock(draw, dx_offset, dy_offset, has_normal, has_fog, range_fog, vbo);
         }
 
         ++g_perf.draws; g_perf.verts += draw.vertex_count; g_perf.idx += draw.index_count;
@@ -3703,11 +3772,12 @@ RecompD3dPresenterError d3d_backend_submit(
         dkCmdBufBindColorState(cmd, &colorState);
 
         // 7. Bind Buffers & Issue Draw
-        DkGpuAddr uboGpu = dyn_gpu + ubo_offset;
         DkGpuAddr vtxGpu = dyn_gpu + vtx_offset;
         DkGpuAddr idxGpu = dyn_gpu + idx_offset;
 
-        dkCmdBufBindUniformBuffer(cmd, DkStage_Fragment, 0, uboGpu, sizeof(FragBlock));
+        if (need_frag_ubo) {
+            dkCmdBufBindUniformBuffer(cmd, DkStage_Fragment, 0, uboGpu, sizeof(FragBlock));
+        }
 
         if (use_gpu_vtx) {
             DkVtxAttribState attribState[5];
@@ -3716,8 +3786,9 @@ RecompD3dPresenterError d3d_backend_submit(
             dkCmdBufBindVtxBufferState(cmd, s_bufferStateFF, 1);
             dkCmdBufBindVtxBuffer(cmd, 0, vtxGpu, vtx_size);
 
-            DkGpuAddr vboGpu = dyn_gpu + vbo_offset;
-            dkCmdBufBindUniformBuffer(cmd, DkStage_Vertex, 0, vboGpu, sizeof(VtxBlock));
+            if (need_vtx_ubo) {
+                dkCmdBufBindUniformBuffer(cmd, DkStage_Vertex, 0, vboGpu, sizeof(VtxBlock));
+            }
         } else {
             DkVtxAttribState attribState[5];
             initVtxAttribs(attribState);

@@ -195,7 +195,8 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_math_neon.c
     src/switch_fast_mem_wrap.c
 )
-set_source_files_properties(src/switch_profiler.cpp PROPERTIES COMPILE_DEFINITIONS "SC2_PC_PROFILE=1")
+# SC2_PC_PROFILE disabled for normal runtime performance (avoids 650Hz Core 0 thread suspension)
+# set_source_files_properties(src/switch_profiler.cpp PROPERTIES COMPILE_DEFINITIONS "SC2_PC_PROFILE=1")
 
 set(RECOMP_0001_SRC ${PROGRAM_DIR}/recomp_0001.c)
 if(EXISTS ${CMAKE_BINARY_DIR}/recomp_0001_prof.c)
