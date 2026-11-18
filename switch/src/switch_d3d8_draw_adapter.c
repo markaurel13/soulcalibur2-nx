@@ -3119,7 +3119,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     /* Program draws carry the offset in c59. */
     if (!program) {
         recomp_guest_load(draw->screen_space_offset, device + 0xad8u, sizeof draw->screen_space_offset);
-        for (uint32_t i = 0u; i < 2u; ++i) draw->screen_space_offset[i] -= 0.53125f;
+        if (layout.pretransformed)
+            for (uint32_t i = 0u; i < 2u; ++i) draw->screen_space_offset[i] -= 0.53125f;
     }
     const uint32_t scissors = *recomp_memory_u32(device + 0x17e0u);
     if (scissors > 1u || (scissors != 0u && *recomp_memory_u32(device + 0x17e4u) != 0u))
@@ -3565,8 +3566,8 @@ static bool try_offload_push_shadow(uint32_t start, uint32_t end)
     job->viewport[4] = viewport->min_z;
     job->viewport[5] = viewport->max_z;
     const float *sso = (const float *)recomp_memory(device + 0xad8u, 8u);
-    job->screen_space_offset[0] = sso[0] - 0.53125f;
-    job->screen_space_offset[1] = sso[1] - 0.53125f;
+    job->screen_space_offset[0] = sso[0];
+    job->screen_space_offset[1] = sso[1];
 
     if (scissors != 0u) {
         memcpy(job->scissor, recomp_memory(device + 0x1760u, sizeof job->scissor), sizeof job->scissor);
