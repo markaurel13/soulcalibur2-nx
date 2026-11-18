@@ -6,6 +6,8 @@
 #include "switch_watchdog.h"
 #include "switch_core_manager.h"
 #include "switch_mod_menu.h"
+#include "switch_imgui_menu.h"
+#include "imgui.h"
 #include "d3d_texture_replace.h"
 #include <switch.h>
 namespace SwitchInput { extern PadState s_pads[4]; }
@@ -199,7 +201,8 @@ static void pumpAudioIfDue(void) {
 #define DESC_BUF_SIZE (256 * 1024)
 #define TEX_POOL_SIZE (160 * 1024 * 1024)
 
-#define MAX_IMAGE_DESCS 2080
+#define MAX_IMAGE_DESCS 2088
+#define IMGUI_FONT_DESC_SLOT (MAX_IMAGE_DESCS - 1)
 #define MAX_SAMPLER_DESCS 32
 #define MAX_TEX_CACHE 2048
 #define MAX_GPU_COPIES 16
@@ -1143,15 +1146,42 @@ static uint32_t uploadHdReplacement(
     uint32_t copy_h = rep.height;
     uint32_t upload_size = 0;
 
+    struct MipUpload {
+        uint32_t src_off;
+        uint32_t stage_off;
+        uint32_t bytes;
+        uint32_t copy_w;
+        uint32_t copy_h;
+    };
+    MipUpload mips[12];
+    uint32_t mip_count = 1;
+
     if (use_hw_bc) {
         uint32_t block_bytes = is_dxt1 ? 8u : 16u;
-        uint32_t bw = (rep.width + 3u) / 4u;
-        uint32_t bh = (rep.height + 3u) / 4u;
-        upload_size = bw * bh * block_bytes;
-        if (upload_size > rep.size) return 0;
         dk_fmt = is_dxt1 ? DkImageFormat_RGBA_BC1 : (is_dxt3 ? DkImageFormat_RGBA_BC2 : DkImageFormat_RGBA_BC3);
-        copy_w = bw * 4u;
-        copy_h = bh * 4u;
+        uint32_t mw = rep.width, mh = rep.height;
+        uint32_t src_off = 0;
+        const bool use_mips = SwitchModMenu_GetHdMipmaps();
+        uint32_t max_levels = std::min<uint32_t>(rep.levels > 0 ? rep.levels : 1u, 12u);
+        uint32_t count = 0;
+        for (uint32_t m = 0; m < max_levels; ++m) {
+            if (m > 0 && (!use_mips || mw < 128u || (mw <= 128u && mh < 64u))) break;
+            uint32_t bw = (mw + 3u) / 4u;
+            uint32_t bh = (mh + 3u) / 4u;
+            uint32_t sz = bw * bh * block_bytes;
+            if (src_off + sz > rep.size) break;
+            mips[count++] = { src_off, 0u, sz, bw * 4u, bh * 4u };
+            src_off += sz;
+            mw = mw > 1u ? (mw >> 1u) : 1u;
+            mh = mh > 1u ? (mh >> 1u) : 1u;
+        }
+        if (count == 0) return 0;
+        mip_count = count;
+        copy_w = mips[0].copy_w;
+        copy_h = mips[0].copy_h;
+        for (uint32_t m = 0; m < mip_count; ++m) {
+            upload_size += (mips[m].bytes + 255u) & ~255u;
+        }
     } else {
         upload_size = rep.width * rep.height * 4u;
         if (!is_bgra) {
@@ -1161,6 +1191,7 @@ static uint32_t uploadHdReplacement(
         } else if (upload_size > rep.size) {
             return 0;
         }
+        mips[0] = { 0u, 0u, upload_size, rep.width, rep.height };
     }
 
     p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
@@ -1170,13 +1201,24 @@ static uint32_t uploadHdReplacement(
     p->dyn_offset += (upload_size + 255u) & ~255u;
     uint8_t *dst = dyn_cpu + stage_offset;
 
-    if (use_hw_bc || is_bgra) {
+    if (use_hw_bc) {
+        uint32_t cur_off = stage_offset;
+        for (uint32_t m = 0; m < mip_count; ++m) {
+            mips[m].stage_off = cur_off;
+            memcpy(dyn_cpu + cur_off, rep.data + mips[m].src_off, mips[m].bytes);
+            cur_off += (mips[m].bytes + 255u) & ~255u;
+        }
+    } else if (is_bgra) {
+        mips[0].stage_off = stage_offset;
         memcpy(dst, rep.data, upload_size);
     } else if (is_dxt1) {
+        mips[0].stage_off = stage_offset;
         decodeDxt1ToBgra8(rep.data, rep.width, rep.height, (uint32_t *)dst);
     } else if (is_dxt3) {
+        mips[0].stage_off = stage_offset;
         decodeDxt3ToBgra8(rep.data, rep.width, rep.height, (uint32_t *)dst);
     } else {
+        mips[0].stage_off = stage_offset;
         decodeDxt5ToBgra8(rep.data, rep.width, rep.height, (uint32_t *)dst);
     }
 
@@ -1186,6 +1228,7 @@ static uint32_t uploadHdReplacement(
     lm.format = dk_fmt;
     lm.dimensions[0] = copy_w;
     lm.dimensions[1] = copy_h;
+    lm.mipLevels = mip_count;
 
     DkImageLayout layout;
     dkImageLayoutInitialize(&layout, &lm);
@@ -1227,9 +1270,15 @@ static uint32_t uploadHdReplacement(
     dkImageViewDefaults(&ct.view, &ct.image);
     dkImageDescriptorInitialize(&p->img_descs_cpu[ct.desc_slot], &ct.view, false, false);
 
-    DkCopyBuf copySrc = { dyn_gpu + stage_offset, use_hw_bc ? 0u : (rep.width * 4u), use_hw_bc ? 0u : rep.height };
-    DkImageRect copyRect = { 0, 0, 0, copy_w, copy_h, 1 };
-    dkCmdBufCopyBufferToImage(cmd, &copySrc, &ct.view, &copyRect, 0);
+    for (uint32_t m = 0; m < mip_count; ++m) {
+        DkImageView mipView;
+        dkImageViewDefaults(&mipView, &ct.image);
+        mipView.mipLevelOffset = (uint8_t)m;
+        mipView.mipLevelCount = 1u;
+        DkCopyBuf copySrc = { dyn_gpu + mips[m].stage_off, use_hw_bc ? 0u : (rep.width * 4u), use_hw_bc ? 0u : rep.height };
+        DkImageRect copyRect = { 0, 0, 0, mips[m].copy_w, mips[m].copy_h, 1 };
+        dkCmdBufCopyBufferToImage(cmd, &copySrc, &mipView, &copyRect, 0);
+    }
     dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
     p->tex_uploads_in_frame++;
@@ -1988,6 +2037,9 @@ static void getTargetResolutionForMode(uint32_t *out_w, uint32_t *out_h) {
     if (appletGetOperationMode() == AppletOperationMode_Console) {
         *out_w = 1920u;
         *out_h = 1080u;
+    } else if (SwitchModMenu_GetHandheldSsaa()) {
+        *out_w = 1600u;
+        *out_h = 900u;
     } else {
         *out_w = 1280u;
         *out_h = 720u;
@@ -2268,7 +2320,7 @@ RecompD3dPresenterError d3d_backend_create(
         smp.minFilter = DkFilter_Linear;
         smp.magFilter = DkFilter_Linear;
         smp.mipFilter = DkMipFilter_Linear;
-        smp.maxAnisotropy = 4.0f;
+        smp.maxAnisotropy = 16.0f;
         auto mapWrap = [](uint32_t code) -> DkWrapMode {
             if (code == 1u) return DkWrapMode_ClampToEdge;
             if (code == 2u) return DkWrapMode_MirroredRepeat;
@@ -2331,6 +2383,37 @@ RecompD3dPresenterError d3d_backend_create(
 static std::atomic<bool> s_app_exiting{false};
 extern "C" bool Switch_IsAppExiting(void) {
     return s_app_exiting.load(std::memory_order_acquire);
+}
+
+static void syncGraphicsSamplers(RecompD3dPresenter *p, DkCmdBuf cmd) {
+    static int s_last_mipmaps = -1;
+    static int s_last_aniso = -1;
+    int cur_mip = SwitchModMenu_GetHdMipmaps() ? 1 : 0;
+    int cur_aniso = SwitchModMenu_GetAnisoLevel();
+    if (cur_aniso < 0 || cur_aniso > 3) cur_aniso = 3;
+    if (cur_mip == s_last_mipmaps && cur_aniso == s_last_aniso) return;
+
+    static const float kAnisoValues[4] = { 1.0f, 4.0f, 8.0f, 16.0f };
+    for (uint32_t s = 0; s < 16; ++s) {
+        DkSampler smp;
+        dkSamplerDefaults(&smp);
+        smp.minFilter = DkFilter_Linear;
+        smp.magFilter = DkFilter_Linear;
+        smp.mipFilter = cur_mip ? DkMipFilter_Linear : DkMipFilter_None;
+        smp.maxAnisotropy = kAnisoValues[cur_aniso];
+        auto mapWrap = [](uint32_t code) -> DkWrapMode {
+            if (code == 1u) return DkWrapMode_ClampToEdge;
+            if (code == 2u) return DkWrapMode_MirroredRepeat;
+            return DkWrapMode_Repeat;
+        };
+        smp.wrapMode[0] = mapWrap(s & 3u);
+        smp.wrapMode[1] = mapWrap((s >> 2u) & 3u);
+        smp.wrapMode[2] = DkWrapMode_Repeat;
+        dkSamplerDescriptorInitialize(&p->smp_descs_cpu[s], &smp);
+    }
+    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors);
+    s_last_mipmaps = cur_mip;
+    s_last_aniso = cur_aniso;
 }
 
 static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
@@ -2439,6 +2522,7 @@ static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
     dkCmdBufAddMemory(cmd, p->block_cmd[slot], 0, CMD_BUF_SIZE);
     dkCmdBufBindRenderTargets(cmd, &p->target_ptrs[p->current_slot], 1, &p->depth_view);
     dkCmdBufBindImageDescriptorSet(cmd, p->img_descs_gpu, MAX_IMAGE_DESCS);
+    syncGraphicsSamplers(p, cmd);
     dkCmdBufBindSamplerDescriptorSet(cmd, p->smp_descs_gpu, MAX_SAMPLER_DESCS);
     DkViewport viewport = { 0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f };
     DkScissor scissor = { 0, 0, p->width, p->height };
@@ -2733,12 +2817,18 @@ static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
     if (p->current_slot < 0) return;
 
     if (!p->mod_font_ready) {
+        const uint8_t *rgba = nullptr;
+        int fw = 0, fh = 0;
+        if (!SwitchImGui_Init(IMGUI_FONT_DESC_SLOT, &rgba, &fw, &fh) || !rgba || fw <= 0 || fh <= 0) {
+            return;
+        }
+
         DkImageLayoutMaker lm;
         dkImageLayoutMakerDefaults(&lm, p->device);
         lm.flags = DkImageFlags_Usage2DEngine;
-        lm.format = DkImageFormat_BGRA8_Unorm;
-        lm.dimensions[0] = MOD_MENU_W;
-        lm.dimensions[1] = MOD_MENU_H;
+        lm.format = DkImageFormat_RGBA8_Unorm;
+        lm.dimensions[0] = (uint32_t)fw;
+        lm.dimensions[1] = (uint32_t)fh;
 
         DkImageLayout layout;
         dkImageLayoutInitialize(&layout, &lm);
@@ -2754,54 +2844,171 @@ static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
         if (!p->mod_font_mem) return;
 
         dkImageInitialize(&p->mod_font_image, &layout, p->mod_font_mem, 0);
-        s_mod_menu_last_state = -1;
+        DkImageView font_view;
+        dkImageViewDefaults(&font_view, &p->mod_font_image);
+        dkImageDescriptorInitialize(&p->img_descs_cpu[IMGUI_FONT_DESC_SLOT], &font_view, false, false);
+
+        uint32_t atlas_bytes = (uint32_t)(fw * fh * 4);
+        p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
+        if (p->dyn_offset + atlas_bytes + 1024u > DYN_BUF_SIZE) return;
+        uint32_t slot = p->cur_cmd_slot;
+        uint32_t tex_off = p->dyn_offset;
+        p->dyn_offset += (atlas_bytes + 255u) & ~255u;
+        memcpy((uint8_t*)p->dyn_cpu[slot] + tex_off, rgba, atlas_bytes);
+        dkMemBlockFlushCpuCache(p->block_dyn[slot], tex_off, atlas_bytes);
+
+        DkCopyBuf copySrc = { p->dyn_gpu[slot] + tex_off, 0u, 0u };
+        DkImageRect copyRect = { 0, 0, 0, (uint32_t)fw, (uint32_t)fh, 1 };
+        dkCmdBufCopyBufferToImage(cmd, &copySrc, &font_view, &copyRect, 0);
+        dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
+
         p->mod_font_ready = true;
     }
 
-    DkImageView menu_view;
-    dkImageViewDefaults(&menu_view, &p->mod_font_image);
+    ImDrawData *dd = SwitchImGui_BuildModMenu(
+        SwitchModMenu_GetUnlockAll(),
+        SwitchModMenu_GetNintendoLayout(),
+        SwitchModMenu_GetHdTextures(),
+        SwitchModMenu_HasHdTextures(),
+        SwitchModMenu_GetHdMipmaps(),
+        SwitchModMenu_GetAnisoLevel(),
+        SwitchModMenu_GetHandheldSsaaUi(),
+        SwitchModMenu_GetCursor(),
+        SwitchModMenu_WasApplied());
+    if (!dd || dd->TotalVtxCount <= 0 || dd->TotalIdxCount <= 0) return;
 
-    bool unlock_all = SwitchModMenu_GetUnlockAll();
-    bool nintendo_layout = SwitchModMenu_GetNintendoLayout();
-    bool hd_textures = SwitchModMenu_GetHdTextures();
-    bool hd_avail = SwitchModMenu_HasHdTextures();
-    int cursor = SwitchModMenu_GetCursor();
-    bool applied = SwitchModMenu_WasApplied();
-    int state_key = (unlock_all ? 1 : 0) | ((cursor & 3) << 1) | (applied ? 8 : 0) |
-                    (nintendo_layout ? 16 : 0) | (hd_textures ? 32 : 0) | (hd_avail ? 64 : 0);
+    uint32_t slot = p->cur_cmd_slot;
+    uint8_t *dyn_cpu = p->dyn_cpu[slot];
+    DkGpuAddr dyn_gpu = p->dyn_gpu[slot];
 
-    if (state_key != s_mod_menu_last_state) {
-        const uint32_t tex_bytes = (uint32_t)(MOD_MENU_W * MOD_MENU_H * 4);
-        p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
-        if (p->dyn_offset + tex_bytes + 1024u <= DYN_BUF_SIZE) {
-            rasterizeModMenuTekken3Style(unlock_all, nintendo_layout, hd_textures, hd_avail, cursor, applied);
+    uint32_t ubo_size = sizeof(FragBlock);
+    uint32_t vtx_bytes = (uint32_t)dd->TotalVtxCount * sizeof(DekoVertex);
+    uint32_t idx_bytes = (uint32_t)dd->TotalIdxCount * sizeof(uint16_t);
+    p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
+    if (p->dyn_offset + ubo_size + vtx_bytes + idx_bytes + 1024u > DYN_BUF_SIZE) return;
 
-            uint32_t slot = p->cur_cmd_slot;
-            uint32_t tex_off = p->dyn_offset;
-            p->dyn_offset += (tex_bytes + 255u) & ~255u;
-            memcpy((uint8_t*)p->dyn_cpu[slot] + tex_off, s_mod_menu_img, tex_bytes);
-            dkMemBlockFlushCpuCache(p->block_dyn[slot], tex_off, tex_bytes);
+    uint32_t ubo_off = p->dyn_offset;
+    p->dyn_offset += (ubo_size + 255u) & ~255u;
+    uint32_t vtx_off = p->dyn_offset;
+    p->dyn_offset += (vtx_bytes + 255u) & ~255u;
+    uint32_t idx_off = p->dyn_offset;
+    p->dyn_offset += (idx_bytes + 255u) & ~255u;
 
-            DkCopyBuf copySrc = { p->dyn_gpu[slot] + tex_off, 0u, 0u };
-            DkImageRect copyRect = { 0, 0, 0, (uint32_t)MOD_MENU_W, (uint32_t)MOD_MENU_H, 1 };
-            dkCmdBufCopyBufferToImage(cmd, &copySrc, &menu_view, &copyRect, 0);
-            dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
-            s_mod_menu_last_state = state_key;
+    FragBlock *fbo = (FragBlock*)(dyn_cpu + ubo_off);
+    memset(fbo, 0, sizeof(*fbo));
+    fbo->u_header[0] = RECOMP_D3D_PIXEL_FIXED_FUNCTION;
+    fbo->u_header[1] = 1u; // 1 stage: MODULATE(TEXTURE, DIFFUSE)
+    fbo->u_constants[0][0] = 1.0f;
+    fbo->u_constants[0][1] = 1.0f;
+    fbo->u_stages[0][0] = (RECOMP_D3DTOP_MODULATE & 0xFFu)
+                        | ((RECOMP_D3DTA_TEXTURE & 0xFFu) << 8u)
+                        | ((RECOMP_D3DTA_DIFFUSE & 0xFFu) << 16u)
+                        | ((RECOMP_D3DTOP_MODULATE & 0xFFu) << 24u);
+    fbo->u_stages[0][1] = (RECOMP_D3DTA_TEXTURE & 0xFFu)
+                        | ((RECOMP_D3DTA_DIFFUSE & 0xFFu) << 8u);
+    fbo->u_stages[0][2] = (RECOMP_D3DTA_CURRENT & 0xFFu)
+                        | (1u << 16u); // sampled = 1
+
+    DekoVertex *vtx_dst = (DekoVertex*)(dyn_cpu + vtx_off);
+    uint16_t *idx_dst = (uint16_t*)(dyn_cpu + idx_off);
+    uint32_t vtx_written = 0;
+    uint32_t idx_written = 0;
+
+    dkCmdBufBindRenderTargets(cmd, &p->target_ptrs[p->current_slot], 1, nullptr);
+    DkViewport viewport = { 0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f };
+    dkCmdBufSetViewports(cmd, 0, &viewport, 1);
+
+    DkShader const* shaders[] = { &p->vsh, &p->fsh_color };
+    dkCmdBufBindShaders(cmd, DkStageFlag_GraphicsMask, shaders, 2);
+    dkCmdBufBindUniformBuffer(cmd, DkStage_Fragment, 0, dyn_gpu + ubo_off, sizeof(FragBlock));
+    p->last_frag_ubo_valid = false;
+
+    DkRasterizerState rasterizerState;
+    dkRasterizerStateDefaults(&rasterizerState);
+    rasterizerState.cullMode = DkFace_None;
+    dkCmdBufBindRasterizerState(cmd, &rasterizerState);
+
+    DkDepthStencilState depthState;
+    dkDepthStencilStateDefaults(&depthState);
+    depthState.depthTestEnable = false;
+    depthState.depthWriteEnable = false;
+    depthState.depthCompareOp = DkCompareOp_Always;
+    dkCmdBufBindDepthStencilState(cmd, &depthState);
+
+    DkBlendState blendState;
+    dkBlendStateDefaults(&blendState);
+    blendState.srcColorBlendFactor = DkBlendFactor_SrcAlpha;
+    blendState.dstColorBlendFactor = DkBlendFactor_InvSrcAlpha;
+    blendState.srcAlphaBlendFactor = DkBlendFactor_One;
+    blendState.dstAlphaBlendFactor = DkBlendFactor_InvSrcAlpha;
+    dkCmdBufBindBlendStates(cmd, 0, &blendState, 1);
+
+    DkColorState colorState;
+    dkColorStateDefaults(&colorState);
+    colorState.blendEnableMask = 0x01;
+    dkCmdBufBindColorState(cmd, &colorState);
+
+    DkVtxAttribState attribState[5];
+    initVtxAttribs(attribState);
+    dkCmdBufBindVtxAttribState(cmd, attribState, 5);
+    dkCmdBufBindVtxBufferState(cmd, s_bufferState, 1);
+    dkCmdBufBindVtxBuffer(cmd, 0, dyn_gpu + vtx_off, vtx_bytes);
+    dkCmdBufBindIdxBuffer(cmd, DkIdxFormat_Uint16, dyn_gpu + idx_off);
+
+    const float sx = (float)p->width / 1280.0f;
+    const float sy = (float)p->height / 720.0f;
+    uint32_t last_tex = 0xFFFFFFFFu;
+
+    for (int n = 0; n < dd->CmdListsCount; ++n) {
+        const ImDrawList *cl = dd->CmdLists[n];
+        uint32_t vbase = vtx_written;
+        uint32_t ibase = idx_written;
+
+        for (int vi = 0; vi < cl->VtxBuffer.Size; ++vi) {
+            const ImDrawVert &iv = cl->VtxBuffer[vi];
+            DekoVertex &dv = vtx_dst[vtx_written++];
+            dv.x = (iv.pos.x / 1280.0f) * 2.0f - 1.0f;
+            dv.y = 1.0f - (iv.pos.y / 720.0f) * 2.0f;
+            dv.z = 0.0f;
+            dv.w = 1.0f;
+            dv.r = (float)((iv.col >> 0) & 0xFFu) / 255.0f;
+            dv.g = (float)((iv.col >> 8) & 0xFFu) / 255.0f;
+            dv.b = (float)((iv.col >> 16) & 0xFFu) / 255.0f;
+            dv.a = (float)((iv.col >> 24) & 0xFFu) / 255.0f;
+            dv.sr = 0.0f; dv.sg = 0.0f; dv.sb = 0.0f; dv.fog = 1.0f;
+            dv.u0 = iv.uv.x;
+            dv.v0 = iv.uv.y;
+            dv.u1 = 0.0f;
+            dv.v1 = 0.0f;
+            dv.u2 = 0.0f; dv.v2 = 0.0f;
+            dv.u3 = 0.0f; dv.v3 = 0.0f;
+        }
+        memcpy(idx_dst + idx_written, cl->IdxBuffer.Data, (size_t)cl->IdxBuffer.Size * sizeof(uint16_t));
+        idx_written += (uint32_t)cl->IdxBuffer.Size;
+
+        for (int ci = 0; ci < cl->CmdBuffer.Size; ++ci) {
+            const ImDrawCmd &pcmd = cl->CmdBuffer[ci];
+            if (pcmd.UserCallback || pcmd.ElemCount == 0) continue;
+
+            float x0 = std::max(0.0f, pcmd.ClipRect.x * sx);
+            float y0 = std::max(0.0f, pcmd.ClipRect.y * sy);
+            float x1 = std::min((float)p->width, pcmd.ClipRect.z * sx);
+            float y1 = std::min((float)p->height, pcmd.ClipRect.w * sy);
+            if (x1 <= x0 || y1 <= y0) continue;
+
+            DkScissor sc = { (uint32_t)x0, (uint32_t)y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0) };
+            dkCmdBufSetScissors(cmd, 0, &sc, 1);
+
+            uint32_t tex_slot = (uint32_t)(uintptr_t)pcmd.GetTexID();
+            if (tex_slot != last_tex) {
+                DkResHandle th[1] = { dkMakeTextureHandle(tex_slot, 5u) };
+                dkCmdBufBindTextures(cmd, DkStage_Fragment, 0, th, 1);
+                last_tex = tex_slot;
+            }
+            dkCmdBufDrawIndexed(cmd, DkPrimitive_Triangles, pcmd.ElemCount, 1,
+                                ibase + pcmd.IdxOffset, (int32_t)(vbase + pcmd.VtxOffset), 0);
         }
     }
-
-    const float s = (float)p->height / 720.0f;
-    const uint32_t dst_w = (uint32_t)((float)MOD_MENU_W * s);
-    const uint32_t dst_h = (uint32_t)((float)MOD_MENU_H * s);
-    const uint32_t dst_x = (p->width > dst_w) ? (p->width - dst_w) / 2u : 0u;
-    const uint32_t dst_y = (p->height > dst_h) ? (p->height - dst_h) / 2u : 0u;
-
-    DkImageRect srcRect = { 0, 0, 0, (uint32_t)MOD_MENU_W, (uint32_t)MOD_MENU_H, 1 };
-    DkImageRect dstRect = { dst_x, dst_y, 0, dst_w, dst_h, 1 };
-    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
-    dkCmdBufBlitImage(cmd, &menu_view, &srcRect, &p->framebuffer_views[p->current_slot], &dstRect,
-                      DkBlitFlag_FilterLinear | DkBlitFlag_ModeAlphaBlend, 0);
-    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
 }
 
 struct StageDiagCounters {

@@ -162,6 +162,7 @@ add_compile_definitions(
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime
     ${CMAKE_CURRENT_SOURCE_DIR}/../recomp-common
     ${RUNTIME_DIR}
@@ -176,6 +177,11 @@ set(SWITCH_PLATFORM_SOURCES
     src/switch_input.cpp
     src/switch_fs.cpp
     src/d3d_presenter_deko3d.cpp
+    src/switch_imgui_menu.cpp
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
     src/switch_audio_audren.cpp
     src/switch_core_manager.cpp
     src/switch_guest_state.cpp
@@ -335,6 +341,11 @@ target_link_libraries(soulcalibur2
     deko3d
     SDL2
     m
+)
+
+set_source_files_properties(
+    third_party/imgui/imgui.cpp
+    PROPERTIES COMPILE_DEFINITIONS "IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS=1"
 )
 
 set_source_files_properties(
