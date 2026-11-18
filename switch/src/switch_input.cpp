@@ -7,6 +7,7 @@
 #include "input_model.h"
 #include "switch_mod_menu.h"
 #include "sc2_training.h"
+#include "d3d_texture_replace.h"
 
 extern "C" uint32_t sc2_scene;
 extern "C" uint8_t *recomp_memory(uint32_t guest_address, size_t width);
@@ -17,21 +18,45 @@ extern "C" void __gcov_dump(void);
 #endif
 
 static const char *MOD_CONFIG_PATH = "sdmc:/switch/soulcalibur2/save/config.txt";
+static const char *HD_TEXTURES_DIR = "sdmc:/switch/soulcalibur2/textures";
 
 static std::atomic<bool> s_mod_menu_open{false};
 static std::atomic<bool> s_mod_unlock_all{false};
 static std::atomic<bool> s_mod_nintendo_layout{false};
+static std::atomic<bool> s_mod_hd_textures{false};
+static std::atomic<bool> s_mod_hd_available{false};
 static std::atomic<int>  s_mod_cursor{0};
 static std::atomic<bool> s_mod_unlock_applied{false};
 static bool s_mod_config_loaded = false;
 
-static void saveModConfig(bool unlock_all, bool nintendo_layout) {
+static bool probeHdTexturesAvailable(void) {
+    mkdir("sdmc:/switch/soulcalibur2", 0777);
+    mkdir(HD_TEXTURES_DIR, 0777);
+    recomp_d3d_textures_configure(HD_TEXTURES_DIR, nullptr);
+    bool avail = recomp_d3d_textures_active();
+    s_mod_hd_available.store(avail, std::memory_order_release);
+    return avail;
+}
+
+static void applyHdTexturesConfig(bool enabled) {
+    mkdir("sdmc:/switch/soulcalibur2", 0777);
+    mkdir(HD_TEXTURES_DIR, 0777);
+    bool avail = s_mod_hd_available.load(std::memory_order_acquire);
+    bool active_req = enabled && avail;
+    recomp_d3d_textures_configure(active_req ? HD_TEXTURES_DIR : nullptr, nullptr);
+    printf("[ModMenu] HD Textures %s (dir=%s, available=%d, active=%d)\n",
+           active_req ? "ENABLED" : "DISABLED", HD_TEXTURES_DIR,
+           avail ? 1 : 0, recomp_d3d_textures_active() ? 1 : 0);
+}
+
+static void saveModConfig(bool unlock_all, bool nintendo_layout, bool hd_textures) {
     mkdir("sdmc:/switch/soulcalibur2", 0777);
     mkdir("sdmc:/switch/soulcalibur2/save", 0777);
     FILE *f = fopen(MOD_CONFIG_PATH, "w");
     if (f) {
         fprintf(f, "unlock_all=%s\n", unlock_all ? "ON" : "OFF");
         fprintf(f, "button_layout=%s\n", nintendo_layout ? "NINTENDO" : "XBOX");
+        fprintf(f, "hd_textures=%s\n", hd_textures ? "ON" : "OFF");
         fclose(f);
     }
 }
@@ -39,17 +64,24 @@ static void saveModConfig(bool unlock_all, bool nintendo_layout) {
 static void loadOrCreateModConfig(void) {
     if (s_mod_config_loaded) return;
     s_mod_config_loaded = true;
+    bool hd_avail = probeHdTexturesAvailable();
     FILE *f = fopen(MOD_CONFIG_PATH, "r");
     if (!f) {
         s_mod_unlock_all.store(false, std::memory_order_release);
         s_mod_nintendo_layout.store(false, std::memory_order_release);
-        saveModConfig(false, false);
-        printf("[ModMenu] Created default %s (unlock_all=OFF, button_layout=XBOX)\n", MOD_CONFIG_PATH);
+        s_mod_hd_textures.store(hd_avail, std::memory_order_release);
+        saveModConfig(false, false, hd_avail);
+        applyHdTexturesConfig(hd_avail);
+        printf("[ModMenu] Created default %s (unlock_all=OFF, button_layout=XBOX, hd_textures=%s)\n",
+               MOD_CONFIG_PATH, hd_avail ? "ON" : "OFF");
         return;
     }
     char line[128];
     bool val = false;
     bool nintendo = false;
+    bool hd_tex = hd_avail;
+    bool saw_hd_tex = false;
+    bool hd_tex_in_file = false;
     while (fgets(line, sizeof(line), f)) {
         if (strncmp(line, "unlock_all=", 11) == 0) {
             const char *p = line + 11;
@@ -61,17 +93,37 @@ static void loadOrCreateModConfig(void) {
             if (strncmp(p, "NINTENDO", 8) == 0 || strncmp(p, "nintendo", 8) == 0 || p[0] == '1') {
                 nintendo = true;
             }
+        } else if (strncmp(line, "hd_textures=", 12) == 0) {
+            const char *p = line + 12;
+            saw_hd_tex = true;
+            if (strncmp(p, "OFF", 3) == 0 || strncmp(p, "off", 3) == 0 || p[0] == '0') {
+                hd_tex = false;
+                hd_tex_in_file = false;
+            } else if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0 || p[0] == '1') {
+                hd_tex = true;
+                hd_tex_in_file = true;
+            }
         }
     }
     fclose(f);
+    if (!hd_avail) {
+        hd_tex = false;
+    }
+    if (!saw_hd_tex || (hd_tex != hd_tex_in_file)) {
+        saveModConfig(val, nintendo, hd_tex);
+    }
     s_mod_unlock_all.store(val, std::memory_order_release);
     s_mod_nintendo_layout.store(nintendo, std::memory_order_release);
-    printf("[ModMenu] Loaded %s (unlock_all=%s, button_layout=%s)\n",
-           MOD_CONFIG_PATH, val ? "ON" : "OFF", nintendo ? "NINTENDO" : "XBOX");
+    s_mod_hd_textures.store(hd_tex, std::memory_order_release);
+    applyHdTexturesConfig(hd_tex);
+    printf("[ModMenu] Loaded %s (unlock_all=%s, button_layout=%s, hd_textures=%s, hd_avail=%d)\n",
+           MOD_CONFIG_PATH, val ? "ON" : "OFF", nintendo ? "NINTENDO" : "XBOX",
+           hd_tex ? "ON" : "OFF", hd_avail ? 1 : 0);
 }
 
 static std::atomic<bool> s_ui_unlock_all{false};
 static std::atomic<bool> s_ui_nintendo_layout{false};
+static std::atomic<bool> s_ui_hd_textures{true};
 
 extern "C" bool SwitchModMenu_IsOpen(void) {
     return s_mod_menu_open.load(std::memory_order_acquire);
@@ -85,6 +137,15 @@ extern "C" bool SwitchModMenu_GetUnlockAll(void) {
 extern "C" bool SwitchModMenu_GetNintendoLayout(void) {
     return (s_mod_menu_open.load(std::memory_order_acquire) ? s_ui_nintendo_layout : s_mod_nintendo_layout)
         .load(std::memory_order_acquire);
+}
+
+extern "C" bool SwitchModMenu_GetHdTextures(void) {
+    return (s_mod_menu_open.load(std::memory_order_acquire) ? s_ui_hd_textures : s_mod_hd_textures)
+        .load(std::memory_order_acquire);
+}
+
+extern "C" bool SwitchModMenu_HasHdTextures(void) {
+    return s_mod_hd_available.load(std::memory_order_acquire);
 }
 
 extern "C" int SwitchModMenu_GetCursor(void) {
@@ -174,6 +235,7 @@ static bool applyFull300UnlockAll(void) {
 extern "C" void SwitchModMenu_ResetPauseState(void) {
     s_ui_unlock_all.store(s_mod_unlock_all.load(std::memory_order_acquire), std::memory_order_release);
     s_ui_nintendo_layout.store(s_mod_nintendo_layout.load(std::memory_order_acquire), std::memory_order_release);
+    s_ui_hd_textures.store(s_mod_hd_textures.load(std::memory_order_acquire), std::memory_order_release);
     padUpdate(&SwitchInput::s_pads[0]);
     s_pause_prev_held = padGetButtons(&SwitchInput::s_pads[0]);
     HidAnalogStickState st = padGetStickPos(&SwitchInput::s_pads[0], 0);
@@ -215,7 +277,7 @@ extern "C" bool SwitchModMenu_TickPause(void) {
     s_pause_prev_stick_ud = stick_ud;
 
     bool need_refresh = false;
-    constexpr int kNumOptions = 2;
+    constexpr int kNumOptions = 3;
     if ((kDown & HidNpadButton_Up) || stick_up_down) {
         int c = s_mod_cursor.load(std::memory_order_acquire);
         s_mod_cursor.store((c + kNumOptions - 1) % kNumOptions, std::memory_order_release);
@@ -237,6 +299,12 @@ extern "C" bool SwitchModMenu_TickPause(void) {
             bool next_layout = !s_ui_nintendo_layout.load(std::memory_order_acquire);
             s_ui_nintendo_layout.store(next_layout, std::memory_order_release);
             need_refresh = true;
+        } else if (c == 2) {
+            if (s_mod_hd_available.load(std::memory_order_acquire)) {
+                bool next_hd = !s_ui_hd_textures.load(std::memory_order_acquire);
+                s_ui_hd_textures.store(next_hd, std::memory_order_release);
+                need_refresh = true;
+            }
         }
     }
     return need_refresh;
@@ -245,16 +313,20 @@ extern "C" bool SwitchModMenu_TickPause(void) {
 extern "C" void SwitchModMenu_WaitReleaseOnExit(void) {
     bool prev_unlock = s_mod_unlock_all.load(std::memory_order_acquire);
     bool prev_nintendo = s_mod_nintendo_layout.load(std::memory_order_acquire);
+    bool prev_hd = s_mod_hd_textures.load(std::memory_order_acquire);
     bool new_unlock = s_ui_unlock_all.load(std::memory_order_acquire);
     bool new_nintendo = s_ui_nintendo_layout.load(std::memory_order_acquire);
+    bool new_hd = s_ui_hd_textures.load(std::memory_order_acquire);
     bool unlock_changed = (new_unlock != prev_unlock);
     bool layout_changed = (new_nintendo != prev_nintendo);
+    bool hd_changed = (new_hd != prev_hd);
 
     s_mod_unlock_all.store(new_unlock, std::memory_order_release);
     s_mod_nintendo_layout.store(new_nintendo, std::memory_order_release);
+    s_mod_hd_textures.store(new_hd, std::memory_order_release);
 
-    if (unlock_changed || layout_changed) {
-        saveModConfig(new_unlock, new_nintendo);
+    if (unlock_changed || layout_changed || hd_changed) {
+        saveModConfig(new_unlock, new_nintendo, new_hd);
         if (unlock_changed) {
             if (new_unlock) {
                 bool ok = (sc2_scene != 0u) && applyFull300UnlockAll();
@@ -265,8 +337,12 @@ extern "C" void SwitchModMenu_WaitReleaseOnExit(void) {
                 s_mod_unlock_applied.store(false, std::memory_order_release);
             }
         }
-        printf("[ModMenu] Exit saved: unlock_all=%s, button_layout=%s (%s)\n",
-               new_unlock ? "ON" : "OFF", new_nintendo ? "NINTENDO" : "XBOX", MOD_CONFIG_PATH);
+        if (hd_changed) {
+            applyHdTexturesConfig(new_hd);
+        }
+        printf("[ModMenu] Exit saved: unlock_all=%s, button_layout=%s, hd_textures=%s (%s)\n",
+               new_unlock ? "ON" : "OFF", new_nintendo ? "NINTENDO" : "XBOX",
+               new_hd ? "ON" : "OFF", MOD_CONFIG_PATH);
     }
 
     while (!Switch_IsAppExiting()) {
@@ -340,6 +416,7 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad) {
                 s_minus_toggled = true;
                 s_ui_unlock_all.store(s_mod_unlock_all.load(std::memory_order_acquire), std::memory_order_release);
                 s_ui_nintendo_layout.store(s_mod_nintendo_layout.load(std::memory_order_acquire), std::memory_order_release);
+                s_ui_hd_textures.store(s_mod_hd_textures.load(std::memory_order_acquire), std::memory_order_release);
                 s_mod_menu_open.store(true, std::memory_order_release);
                 printf("[ModMenu] OPENED (pausing at frame boundary)\n");
                 return true; // *gamepad stays zeroed

@@ -4,7 +4,9 @@
 #include "sc2_ff_shaders.h"
 #include "font8x8.h"
 #include "switch_watchdog.h"
+#include "switch_core_manager.h"
 #include "switch_mod_menu.h"
+#include "d3d_texture_replace.h"
 #include <switch.h>
 namespace SwitchInput { extern PadState s_pads[4]; }
 
@@ -15,11 +17,25 @@ namespace SwitchInput { extern PadState s_pads[4]; }
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <filesystem>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
+
+extern "C" bool recomp_d3d_texture_parse_dds(const uint8_t *file, size_t size, RecompD3dReplacement *out);
 
 extern "C" {
 extern uint32_t sc2_scene;
 void SwitchAudio_FlushPending(void);
+void SwitchFS_TakeReadPerf(uint64_t *ticks, uint32_t *calls, uint64_t *bytes);
+uint64_t SwitchFS_LastDiscIoTick(void);
 void SwitchAudio_TakePerf(uint64_t *update_ticks, uint64_t *submit_ticks, uint64_t *flush_ticks,
                           uint32_t *updates, uint32_t *submits);
 void SwitchAudio_PrintAndResetDiag(void);
@@ -108,7 +124,12 @@ struct PerfStats {
         uint32_t frame;
         double wall_ms, guest_ms, back_ms, draw_ms, vtx_ms, tex_ms, aud_ms, wait_ms;
         uint32_t draws, tex_up, dyn_kb;
+        double ntread_ms;
+        uint32_t ntread_calls, ntread_kb;
     } pending_hitches[5] = {};
+    uint64_t block_ntread_ticks = 0;
+    uint32_t block_ntread_calls = 0;
+    uint64_t block_ntread_bytes = 0;
     uint32_t hitches_logged = 0;
     struct PacingMissRec {
         uint32_t frame;
@@ -362,6 +383,9 @@ struct CachedTexture {
     uint8_t palette[PALETTE_BYTES];
     uint32_t desc_slot; // 1 .. MAX_IMAGE_DESCS - 1
     int hash_next;
+    uint64_t hd_key;
+    bool hd_pending;
+    int hd_hash_next;
     DkImage image;
     DkImageView view;
 };
@@ -413,6 +437,7 @@ struct RecompD3dPresenter {
     uint32_t next_cache_slot;
     CachedTexture tex_cache[MAX_TEX_CACHE];
     int tex_hash_head[TEX_HASH_BUCKETS];
+    int hd_hash_head[TEX_HASH_BUCKETS];
     DkImage white_image;
     DkImageView white_view;
 
@@ -436,6 +461,7 @@ struct RecompD3dPresenter {
     DkMemBlock mod_font_mem;
     DkImage mod_font_image;
     bool mod_font_ready;
+    uint32_t tex_replace_gen;
 
     // Dynamic vertex/index/uniform/staging buffer ring (double-buffered)
     DkMemBlock block_dyn[NUM_CMD_SLOTS];
@@ -469,13 +495,21 @@ static inline uint32_t hashGuestDataAddr(uint32_t addr) {
     return ((addr >> 4) ^ (addr >> 16)) & (TEX_HASH_BUCKETS - 1);
 }
 
+static inline uint32_t hashHdKey(uint64_t key) {
+    return (uint32_t)((key ^ (key >> 16) ^ (key >> 32)) & (TEX_HASH_BUCKETS - 1));
+}
+
 static void clearTexHashTable(RecompD3dPresenter *p) {
     for (int i = 0; i < TEX_HASH_BUCKETS; ++i) {
         p->tex_hash_head[i] = -1;
+        p->hd_hash_head[i] = -1;
     }
     for (int i = 0; i < MAX_TEX_CACHE; ++i) {
         p->tex_cache[i].used = false;
         p->tex_cache[i].hash_next = -1;
+        p->tex_cache[i].hd_key = 0;
+        p->tex_cache[i].hd_pending = false;
+        p->tex_cache[i].hd_hash_next = -1;
     }
 }
 
@@ -493,7 +527,24 @@ static void removeTexSlotFromHash(RecompD3dPresenter *p, int slot) {
         prev = cur;
         cur = p->tex_cache[cur].hash_next;
     }
+    if (p->tex_cache[slot].hd_key != 0 && !p->tex_cache[slot].hd_pending) {
+        uint32_t hh = hashHdKey(p->tex_cache[slot].hd_key);
+        int hcur = p->hd_hash_head[hh];
+        int hprev = -1;
+        while (hcur != -1) {
+            if (hcur == slot) {
+                if (hprev == -1) p->hd_hash_head[hh] = p->tex_cache[hcur].hd_hash_next;
+                else p->tex_cache[hprev].hd_hash_next = p->tex_cache[hcur].hd_hash_next;
+                break;
+            }
+            hprev = hcur;
+            hcur = p->tex_cache[hcur].hd_hash_next;
+        }
+    }
     p->tex_cache[slot].hash_next = -1;
+    p->tex_cache[slot].hd_hash_next = -1;
+    p->tex_cache[slot].hd_key = 0;
+    p->tex_cache[slot].hd_pending = false;
     p->tex_cache[slot].used = false;
 }
 
@@ -844,6 +895,332 @@ static void decodeDxt5ToBgra8(const uint8_t *src, uint32_t w, uint32_t h, uint32
     }
 }
 
+struct HdTexProf {
+    uint64_t key_ns = 0;
+    uint64_t io_ns = 0;
+    uint64_t up_ns = 0;
+    uint32_t key_calls = 0;
+    uint32_t hd_hits = 0;
+    uint32_t hd_small_bc = 0;
+    uint32_t pool_wraps = 0;
+};
+static HdTexProf g_hd_prof;
+static uint32_t g_hd_slow_logs = 0;
+
+struct HdDdsEntry {
+    std::vector<uint8_t> bytes;
+    RecompD3dReplacement rep{};
+    bool valid = false;
+};
+
+class HdAsyncLoader {
+public:
+    static constexpr const char *kTexturesDir = "sdmc:/switch/soulcalibur2/textures";
+    static constexpr size_t kMaxRamCacheBytes = 160u * 1024u * 1024u;
+
+    ~HdAsyncLoader() {
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    void ensureStarted() {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (!started_) {
+            started_ = true;
+            worker_ = std::thread([this]() { workerLoop(); });
+        }
+    }
+
+    bool requestOrGet(uint64_t key, std::shared_ptr<const HdDdsEntry> &out, bool &is_pending) {
+        ensureStarted();
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (!index_ready_) {
+            is_pending = true;
+            return false;
+        }
+        if (index_map_.find(key) == index_map_.end()) {
+            is_pending = false;
+            return false;
+        }
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            lru_list_.splice(lru_list_.begin(), lru_list_, it->second.second);
+            out = it->second.first;
+            is_pending = false;
+            return out && out->valid;
+        }
+        if (queued_or_loading_.insert(key).second) {
+            queue_.push_back(key);
+            cv_.notify_one();
+        }
+        is_pending = true;
+        return false;
+    }
+
+private:
+    static bool parseHexStem16(const std::filesystem::path &p, uint64_t &out_key) {
+        std::string ext = p.extension().string();
+        if (ext.size() != 4) return false;
+        if ((ext[0] != '.') ||
+            (ext[1] != 'd' && ext[1] != 'D') ||
+            (ext[2] != 'd' && ext[2] != 'D') ||
+            (ext[3] != 's' && ext[3] != 'S')) {
+            return false;
+        }
+        std::string stem = p.stem().string();
+        if (stem.size() != 16) return false;
+        char *end = nullptr;
+        uint64_t v = std::strtoull(stem.c_str(), &end, 16);
+        if (end != stem.c_str() + 16 || v == 0) return false;
+        out_key = v;
+        return true;
+    }
+
+    void workerLoop() {
+        if (SwitchCore_MoveCurrentThreadToSystemCore(0x32)) {
+            printf("[HdAsync] Worker pinned to Core 3 (prio 0x32)\n");
+        } else {
+            svcSetThreadPriority(CUR_THREAD_HANDLE, 0x38);
+            printf("[HdAsync] Worker using low prio 0x38 (3-core mode)\n");
+        }
+        // 1. One-time recursive scan of SD textures directory
+        std::unordered_map<uint64_t, std::string> local_idx;
+        std::error_code ec;
+        if (std::filesystem::is_directory(kTexturesDir, ec)) {
+            for (auto it = std::filesystem::recursive_directory_iterator(
+                     kTexturesDir, std::filesystem::directory_options::follow_directory_symlink, ec);
+                 !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+                if (!it->is_regular_file(ec)) continue;
+                uint64_t key = 0;
+                if (parseHexStem16(it->path(), key)) {
+                    local_idx.emplace(key, it->path().string());
+                }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            index_map_.swap(local_idx);
+            index_ready_ = true;
+            printf("[HdAsync] Indexed %zu DDS files in %s\n", index_map_.size(), kTexturesDir);
+        }
+
+        // 2. Stream queued DDS files from SD card into RAM LRU cache
+        while (true) {
+            uint64_t key = 0;
+            std::string path;
+            {
+                std::unique_lock<std::mutex> lk(mtx_);
+                cv_.wait(lk, [this]() { return stop_ || !queue_.empty(); });
+                if (stop_) break;
+                key = queue_.front();
+                queue_.pop_front();
+                auto idx_it = index_map_.find(key);
+                if (idx_it == index_map_.end()) {
+                    queued_or_loading_.erase(key);
+                    continue;
+                }
+                path = idx_it->second;
+            }
+
+            auto waitForSdIdle = [this]() {
+                while (!stop_) {
+                    uint64_t last_io = SwitchFS_LastDiscIoTick();
+                    if (last_io == 0) break;
+                    uint64_t now = armGetSystemTick();
+                    if (now >= last_io && (now - last_io) >= 1920000ULL) break; // 100 ms quiet window
+                    svcSleepThread(5000000ULL);
+                }
+            };
+
+            waitForSdIdle();
+            auto entry = std::make_shared<HdDdsEntry>();
+            if (FILE *f = std::fopen(path.c_str(), "rb")) {
+                std::fseek(f, 0, SEEK_END);
+                long len = std::ftell(f);
+                std::fseek(f, 0, SEEK_SET);
+                if (len > 0) {
+                    entry->bytes.resize((size_t)len);
+                    static constexpr size_t kDdsChunk = 131072u; // 128 KB chunks to yield SD bus
+                    size_t off = 0;
+                    bool read_ok = true;
+                    while (!stop_ && off < entry->bytes.size()) {
+                        waitForSdIdle();
+                        size_t want = std::min(kDdsChunk, entry->bytes.size() - off);
+                        size_t got = std::fread(entry->bytes.data() + off, 1, want, f);
+                        if (got != want) {
+                            read_ok = false;
+                            break;
+                        }
+                        off += got;
+                    }
+                    if (read_ok && off == entry->bytes.size()) {
+                        entry->valid = recomp_d3d_texture_parse_dds(entry->bytes.data(), entry->bytes.size(), &entry->rep);
+                    }
+                }
+                std::fclose(f);
+            }
+            if (!entry->valid) {
+                entry->bytes.clear();
+                entry->bytes.shrink_to_fit();
+            }
+
+            {
+                std::lock_guard<std::mutex> lk(mtx_);
+                if (cache_.find(key) == cache_.end()) {
+                    size_t sz = entry->bytes.size();
+                    lru_list_.push_front(key);
+                    cache_.emplace(key, std::make_pair(entry, lru_list_.begin()));
+                    cache_bytes_ += sz;
+                    while (cache_bytes_ > kMaxRamCacheBytes && lru_list_.size() > 1) {
+                        uint64_t evict_key = lru_list_.back();
+                        lru_list_.pop_back();
+                        auto ev_it = cache_.find(evict_key);
+                        if (ev_it != cache_.end()) {
+                            cache_bytes_ -= ev_it->second.first->bytes.size();
+                            cache_.erase(ev_it);
+                        }
+                    }
+                }
+                queued_or_loading_.erase(key);
+            }
+        }
+    }
+
+    std::mutex mtx_;
+    std::condition_variable cv_;
+    std::thread worker_;
+    bool started_ = false;
+    bool stop_ = false;
+    bool index_ready_ = false;
+    std::unordered_map<uint64_t, std::string> index_map_;
+    std::list<uint64_t> lru_list_;
+    std::unordered_map<uint64_t, std::pair<std::shared_ptr<const HdDdsEntry>, std::list<uint64_t>::iterator>> cache_;
+    size_t cache_bytes_ = 0;
+    std::deque<uint64_t> queue_;
+    std::unordered_set<uint64_t> queued_or_loading_;
+};
+
+static HdAsyncLoader g_hd_loader;
+
+static uint32_t uploadHdReplacement(
+    RecompD3dPresenter *p, const RecompD3dTextureDesc &desc,
+    uint32_t fmt, bool palettized, const void *pal_bytes,
+    uint64_t fp, uint32_t h, uint64_t hd_key, const RecompD3dReplacement &rep)
+{
+    const bool is_bgra = (rep.format == RECOMP_D3D_REPLACEMENT_BGRA8);
+    const bool is_dxt1 = (rep.format == RECOMP_D3D_REPLACEMENT_DXT1);
+    const bool is_dxt3 = (rep.format == RECOMP_D3D_REPLACEMENT_DXT3);
+    const bool small_bc = !is_bgra && (rep.width < 128u || (rep.width <= 128u && rep.height < 64u));
+    const bool use_hw_bc = !is_bgra && !small_bc;
+    if (small_bc) g_hd_prof.hd_small_bc++;
+
+    uint32_t slot = p->cur_cmd_slot;
+    DkCmdBuf cmd = p->cmdbuf[slot];
+    uint8_t *dyn_cpu = p->dyn_cpu[slot];
+    DkGpuAddr dyn_gpu = p->dyn_gpu[slot];
+
+    DkImageFormat dk_fmt = DkImageFormat_BGRA8_Unorm;
+    uint32_t copy_w = rep.width;
+    uint32_t copy_h = rep.height;
+    uint32_t upload_size = 0;
+
+    if (use_hw_bc) {
+        uint32_t block_bytes = is_dxt1 ? 8u : 16u;
+        uint32_t bw = (rep.width + 3u) / 4u;
+        uint32_t bh = (rep.height + 3u) / 4u;
+        upload_size = bw * bh * block_bytes;
+        if (upload_size > rep.size) return 0;
+        dk_fmt = is_dxt1 ? DkImageFormat_RGBA_BC1 : (is_dxt3 ? DkImageFormat_RGBA_BC2 : DkImageFormat_RGBA_BC3);
+        copy_w = bw * 4u;
+        copy_h = bh * 4u;
+    } else {
+        upload_size = rep.width * rep.height * 4u;
+        if (!is_bgra) {
+            uint32_t block_bytes = is_dxt1 ? 8u : 16u;
+            uint32_t need = ((rep.width + 3u) / 4u) * ((rep.height + 3u) / 4u) * block_bytes;
+            if (need > rep.size) return 0;
+        } else if (upload_size > rep.size) {
+            return 0;
+        }
+    }
+
+    p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
+    if (p->dyn_offset + upload_size + 65536u > DYN_BUF_SIZE) return 0;
+
+    uint32_t stage_offset = p->dyn_offset;
+    p->dyn_offset += (upload_size + 255u) & ~255u;
+    uint8_t *dst = dyn_cpu + stage_offset;
+
+    if (use_hw_bc || is_bgra) {
+        memcpy(dst, rep.data, upload_size);
+    } else if (is_dxt1) {
+        decodeDxt1ToBgra8(rep.data, rep.width, rep.height, (uint32_t *)dst);
+    } else if (is_dxt3) {
+        decodeDxt3ToBgra8(rep.data, rep.width, rep.height, (uint32_t *)dst);
+    } else {
+        decodeDxt5ToBgra8(rep.data, rep.width, rep.height, (uint32_t *)dst);
+    }
+
+    DkImageLayoutMaker lm;
+    dkImageLayoutMakerDefaults(&lm, p->device);
+    lm.flags = 0;
+    lm.format = dk_fmt;
+    lm.dimensions[0] = copy_w;
+    lm.dimensions[1] = copy_h;
+
+    DkImageLayout layout;
+    dkImageLayoutInitialize(&layout, &lm);
+    uint32_t img_size = (uint32_t)dkImageLayoutGetSize(&layout);
+    uint32_t img_align = dkImageLayoutGetAlignment(&layout);
+
+    p->tex_pool_offset = (p->tex_pool_offset + img_align - 1) & ~(img_align - 1);
+    if (p->tex_pool_offset + img_size > TEX_POOL_SIZE) {
+        g_hd_prof.pool_wraps++;
+        p->tex_pool_offset = 4096;
+        clearTexHashTable(p);
+        p->tex_pool_offset = (p->tex_pool_offset + img_align - 1) & ~(img_align - 1);
+    }
+    uint32_t img_offset = p->tex_pool_offset;
+    p->tex_pool_offset += img_size;
+
+    uint32_t cache_idx = p->next_cache_slot;
+    p->next_cache_slot = (p->next_cache_slot + 1) % MAX_TEX_CACHE;
+    removeTexSlotFromHash(p, (int)cache_idx);
+
+    CachedTexture &ct = p->tex_cache[cache_idx];
+    ct.used = true;
+    ct.data = desc.data;
+    ct.format_byte = fmt;
+    ct.width = desc.width;
+    ct.height = desc.height;
+    ct.fingerprint = fp;
+    if (palettized) memcpy(ct.palette, pal_bytes, PALETTE_BYTES);
+    ct.desc_slot = cache_idx + 1;
+    ct.hash_next = p->tex_hash_head[h];
+    p->tex_hash_head[h] = (int)cache_idx;
+    ct.hd_key = hd_key;
+    ct.hd_pending = false;
+    uint32_t hh = hashHdKey(hd_key);
+    ct.hd_hash_next = p->hd_hash_head[hh];
+    p->hd_hash_head[hh] = (int)cache_idx;
+
+    dkImageInitialize(&ct.image, &layout, p->block_tex, img_offset);
+    dkImageViewDefaults(&ct.view, &ct.image);
+    dkImageDescriptorInitialize(&p->img_descs_cpu[ct.desc_slot], &ct.view, false, false);
+
+    DkCopyBuf copySrc = { dyn_gpu + stage_offset, use_hw_bc ? 0u : (rep.width * 4u), use_hw_bc ? 0u : rep.height };
+    DkImageRect copyRect = { 0, 0, 0, copy_w, copy_h, 1 };
+    dkCmdBufCopyBufferToImage(cmd, &copySrc, &ct.view, &copyRect, 0);
+    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
+
+    p->tex_uploads_in_frame++;
+    return ct.desc_slot;
+}
+
 static uint32_t lookupOrUploadSingleTexture(
     RecompD3dPresenter *p,
     const RecompD3dTextureDesc &desc,
@@ -877,12 +1254,66 @@ static uint32_t lookupOrUploadSingleTexture(
     uint64_t t_tex_start = perfNow();
     uint64_t fp = quickFingerprint(tex_bytes, tex_byte_count);
     uint32_t h = hashGuestDataAddr(desc.data);
+    const bool hd_active = recomp_d3d_textures_active();
     for (int idx = p->tex_hash_head[h]; idx != -1; idx = p->tex_cache[idx].hash_next) {
         CachedTexture &ct = p->tex_cache[idx];
         if (ct.used && ct.data == desc.data && ct.format_byte == fmt &&
             ct.width == desc.width && ct.height == desc.height && ct.fingerprint == fp) {
             if (!palettized || memcmp(ct.palette, pal_bytes, PALETTE_BYTES) == 0) {
+                if (ct.hd_pending && hd_active && ct.hd_key != 0u) {
+                    std::shared_ptr<const HdDdsEntry> entry;
+                    bool still_pending = false;
+                    uint64_t t_io0 = perfNow();
+                    bool ready = g_hd_loader.requestOrGet(ct.hd_key, entry, still_pending);
+                    uint64_t t_io1 = perfNow();
+                    g_hd_prof.io_ns += (t_io1 - t_io0);
+                    if (!still_pending) {
+                        uint64_t upgrade_key = ct.hd_key;
+                        ct.hd_pending = false;
+                        if (ready && entry) {
+                            uint64_t t_up0 = perfNow();
+                            uint32_t hd_slot = uploadHdReplacement(p, desc, fmt, palettized, pal_bytes, fp, h, upgrade_key, entry->rep);
+                            uint64_t t_up1 = perfNow();
+                            g_hd_prof.up_ns += (t_up1 - t_up0);
+                            g_hd_prof.hd_hits++;
+                            if (hd_slot != 0u) return hd_slot;
+                        }
+                    }
+                }
                 return ct.desc_slot;
+            }
+        }
+    }
+    uint64_t pending_hd_key = 0u;
+    if (hd_active) {
+        uint64_t t_k0 = perfNow();
+        uint64_t hd_key = recomp_d3d_texture_key(&desc, tex_bytes, tex_byte_count, pal_bytes);
+        uint64_t t_k1 = perfNow();
+        g_hd_prof.key_ns += (t_k1 - t_k0);
+        g_hd_prof.key_calls++;
+        if (hd_key != 0u) {
+            uint32_t hh = hashHdKey(hd_key);
+            for (int hidx = p->hd_hash_head[hh]; hidx != -1; hidx = p->tex_cache[hidx].hd_hash_next) {
+                const CachedTexture &hct = p->tex_cache[hidx];
+                if (hct.used && hct.hd_key == hd_key && !hct.hd_pending) {
+                    return hct.desc_slot;
+                }
+            }
+            std::shared_ptr<const HdDdsEntry> entry;
+            bool is_pending = false;
+            uint64_t t_io0 = perfNow();
+            bool ready = g_hd_loader.requestOrGet(hd_key, entry, is_pending);
+            uint64_t t_io1 = perfNow();
+            g_hd_prof.io_ns += (t_io1 - t_io0);
+            if (ready && entry) {
+                uint64_t t_up0 = perfNow();
+                uint32_t hd_slot = uploadHdReplacement(p, desc, fmt, palettized, pal_bytes, fp, h, hd_key, entry->rep);
+                uint64_t t_up1 = perfNow();
+                g_hd_prof.up_ns += (t_up1 - t_up0);
+                g_hd_prof.hd_hits++;
+                if (hd_slot != 0u) return hd_slot;
+            } else if (is_pending) {
+                pending_hd_key = hd_key;
             }
         }
     }
@@ -952,6 +1383,9 @@ static uint32_t lookupOrUploadSingleTexture(
         ct.desc_slot = cache_idx + 1;
         ct.hash_next = p->tex_hash_head[h];
         p->tex_hash_head[h] = (int)cache_idx;
+        ct.hd_key = pending_hd_key;
+        ct.hd_pending = (pending_hd_key != 0u);
+        ct.hd_hash_next = -1;
 
         dkImageInitialize(&ct.image, &layout, p->block_tex, img_offset);
         dkImageViewDefaults(&ct.view, &ct.image);
@@ -1121,6 +1555,7 @@ static uint32_t lookupOrUploadSingleTexture(
 
     p->tex_pool_offset = (p->tex_pool_offset + img_align - 1) & ~(img_align - 1);
     if (p->tex_pool_offset + img_size > TEX_POOL_SIZE) {
+        g_hd_prof.pool_wraps++;
         p->tex_pool_offset = 4096;
         clearTexHashTable(p);
         p->tex_pool_offset = (p->tex_pool_offset + img_align - 1) & ~(img_align - 1);
@@ -1143,6 +1578,9 @@ static uint32_t lookupOrUploadSingleTexture(
     ct.desc_slot = cache_idx + 1;
     ct.hash_next = p->tex_hash_head[h];
     p->tex_hash_head[h] = (int)cache_idx;
+    ct.hd_key = pending_hd_key;
+    ct.hd_pending = (pending_hd_key != 0u);
+    ct.hd_hash_next = -1;
 
     dkImageInitialize(&ct.image, &layout, p->block_tex, img_offset);
     dkImageViewDefaults(&ct.view, &ct.image);
@@ -2128,11 +2566,11 @@ static void drawFpsOverlay(RecompD3dPresenter *p, DkCmdBuf cmd, double fps, doub
 }
 
 static constexpr int MOD_MENU_W = 820;
-static constexpr int MOD_MENU_H = 352;
+static constexpr int MOD_MENU_H = 398;
 static uint32_t s_mod_menu_img[MOD_MENU_W * MOD_MENU_H];
 static int s_mod_menu_last_state = -1;
 
-static void rasterizeModMenuTekken3Style(bool unlock_all, bool nintendo_layout, int cursor, bool applied) {
+static void rasterizeModMenuTekken3Style(bool unlock_all, bool nintendo_layout, bool hd_textures, bool hd_avail, int cursor, bool applied) {
     auto fill_rect = [&](int rx, int ry, int rw, int rh, uint32_t color) {
         int x1 = rx < 0 ? 0 : rx;
         int y1 = ry < 0 ? 0 : ry;
@@ -2190,8 +2628,8 @@ static void rasterizeModMenuTekken3Style(bool unlock_all, bool nintendo_layout, 
     draw_text(170, 19, "SOULCALIBUR II NX - MOD MENU", 0xFFFFD700u, 2);
 
     // Selected row highlight
-    const int item_y[2] = { 76, 122 };
-    if (cursor >= 0 && cursor < 2) {
+    const int item_y[3] = { 76, 122, 168 };
+    if (cursor >= 0 && cursor < 3) {
         fill_rect(18, item_y[cursor] - 8, MOD_MENU_W - 36, 36, 0xFF1E3A5Fu);
         draw_border(18, item_y[cursor] - 8, MOD_MENU_W - 36, 36, 0xFF00D4FFu, 1);
     }
@@ -2206,26 +2644,39 @@ static void rasterizeModMenuTekken3Style(bool unlock_all, bool nintendo_layout, 
     const char *lay_str = nintendo_layout ? "< NINTENDO (A / B)  >" : "< XBOX (Default)    >";
     draw_text(442, item_y[1] + 2, lay_str, nintendo_layout ? 0xFFFFE066u : 0xFF55FFFFu, 2);
 
+    draw_text(34, item_y[2] + 2, cursor == 2 ? "> HD Textures (DDS)  :" : "  HD Textures (DDS)  :",
+              cursor == 2 ? 0xFFFFFFFFu : 0xFFB0C4DEu, 2);
+    const char *hd_str = !hd_avail
+        ? "< OFF (No Textures) >"
+        : (hd_textures ? "< 1: ON (textures/) >" : "< 0: OFF (Original) >");
+    uint32_t hd_col = !hd_avail ? 0xFF8899AAu : (hd_textures ? 0xFF55FF55u : 0xFF55FFFFu);
+    draw_text(442, item_y[2] + 2, hd_str, hd_col, 2);
+
     // Status box
-    fill_rect(24, 174, MOD_MENU_W - 48, 1, 0xFF334455u);
-    const char *status_msg = unlock_all
-        ? (applied
-            ? "Status: Active! Characters, Weapons & all Stages unlocked."
-            : "Status: Saved ON! Enter Title/Menus or restart to apply.")
-        : "Status: OFF (saved in sdmc:/switch/soulcalibur2/save/config.txt)";
-    fill_rect(26, 190, MOD_MENU_W - 52, 32, unlock_all ? 0xFF003322u : 0xFF161E2Eu);
-    draw_border(26, 190, MOD_MENU_W - 52, 32, unlock_all ? 0xFF00FF88u : 0xFF334455u, 1);
-    draw_text(40, 202, status_msg, unlock_all ? 0xFF00FFAAu : 0xFFB0C4DEu, 1);
+    fill_rect(24, 220, MOD_MENU_W - 48, 1, 0xFF334455u);
+    const char *status_msg = (cursor == 2 && !hd_avail)
+        ? "No textures detected in sdmc:/switch/soulcalibur2/textures/"
+        : (unlock_all
+            ? (applied
+                ? "Status: Unlock All Active! Characters, Weapons & Stages unlocked."
+                : "Status: Unlock All Saved ON! Enter Title/Menus or restart to apply.")
+            : "Status: OFF (saved in sdmc:/switch/soulcalibur2/save/config.txt)");
+    uint32_t st_bg = (cursor == 2 && !hd_avail) ? 0xFF2B1D14u : (unlock_all ? 0xFF003322u : 0xFF161E2Eu);
+    uint32_t st_bd = (cursor == 2 && !hd_avail) ? 0xFFFFAA44u : (unlock_all ? 0xFF00FF88u : 0xFF334455u);
+    uint32_t st_fg = (cursor == 2 && !hd_avail) ? 0xFFFFCC66u : (unlock_all ? 0xFF00FFAAu : 0xFFB0C4DEu);
+    fill_rect(26, 236, MOD_MENU_W - 52, 32, st_bg);
+    draw_border(26, 236, MOD_MENU_W - 52, 32, st_bd, 1);
+    draw_text(40, 248, status_msg, st_fg, 1);
 
     // Footer separator & Minus-only 1s hold close hint
-    fill_rect(24, 242, MOD_MENU_W - 48, 1, 0xFF334455u);
-    draw_text(36, 260,
+    fill_rect(24, 288, MOD_MENU_W - 48, 1, 0xFF334455u);
+    draw_text(36, 306,
               nintendo_layout
                   ? "Up / Down: Select   |   A / Left / Right: Change   |   Hold (-) 1s: Close"
                   : "Up / Down: Select   |   B / Left / Right: Change   |   Hold (-) 1s: Close",
               0xFFAAAAAAu, 1);
-    draw_text(36, 286, "* Unlock All applies automatically after loading your save file.", 0xFFFFB84Du, 1);
-    draw_text(36, 304, "* Button Layout swaps A and B immediately (Xbox vs Nintendo).", 0xFFFFB84Du, 1);
+    draw_text(36, 332, "* Changes are saved and applied when closing the Mod Menu.", 0xFFFFB84Du, 1);
+    draw_text(36, 350, "* HD Textures supports DXT1/DXT3/DXT5/BGRA8 .dds files by XXH64 hash.", 0xFFFFB84Du, 1);
 }
 
 static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
@@ -2262,15 +2713,18 @@ static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
 
     bool unlock_all = SwitchModMenu_GetUnlockAll();
     bool nintendo_layout = SwitchModMenu_GetNintendoLayout();
+    bool hd_textures = SwitchModMenu_GetHdTextures();
+    bool hd_avail = SwitchModMenu_HasHdTextures();
     int cursor = SwitchModMenu_GetCursor();
     bool applied = SwitchModMenu_WasApplied();
-    int state_key = (unlock_all ? 1 : 0) | ((cursor & 3) << 1) | (applied ? 8 : 0) | (nintendo_layout ? 16 : 0);
+    int state_key = (unlock_all ? 1 : 0) | ((cursor & 3) << 1) | (applied ? 8 : 0) |
+                    (nintendo_layout ? 16 : 0) | (hd_textures ? 32 : 0) | (hd_avail ? 64 : 0);
 
     if (state_key != s_mod_menu_last_state) {
         const uint32_t tex_bytes = (uint32_t)(MOD_MENU_W * MOD_MENU_H * 4);
         p->dyn_offset = (p->dyn_offset + 255u) & ~255u;
         if (p->dyn_offset + tex_bytes + 1024u <= DYN_BUF_SIZE) {
-            rasterizeModMenuTekken3Style(unlock_all, nintendo_layout, cursor, applied);
+            rasterizeModMenuTekken3Style(unlock_all, nintendo_layout, hd_textures, hd_avail, cursor, applied);
 
             uint32_t slot = p->cur_cmd_slot;
             uint32_t tex_off = p->dyn_offset;
@@ -3512,6 +3966,12 @@ RecompD3dPresenterError d3d_backend_submit(
             // Restore clean frozen frame from backbuffer_snap_view without menu
             Switch_PresentFrozenModMenuFrame();
             SwitchModMenu_WaitReleaseOnExit();
+            uint32_t gen = recomp_d3d_textures_generation();
+            if (gen != presenter->tex_replace_gen) {
+                clearTexHashTable(presenter);
+                presenter->tex_pool_offset = 4096;
+                presenter->tex_replace_gen = gen;
+            }
         }
         {
             static uint32_t s_total_pres_hitches = 0;
@@ -3583,6 +4043,12 @@ RecompD3dPresenterError d3d_backend_submit(
                         pm.tex_up = presenter->tex_uploads_in_frame;
                     }
                 }
+                uint64_t nt_ticks = 0, nt_bytes = 0;
+                uint32_t nt_calls = 0;
+                SwitchFS_TakeReadPerf(&nt_ticks, &nt_calls, &nt_bytes);
+                g_perf.block_ntread_ticks += nt_ticks;
+                g_perf.block_ntread_calls += nt_calls;
+                g_perf.block_ntread_bytes += nt_bytes;
                 if (wall > 384000ULL && presenter->draws_in_frame >= 100u &&
                     g_perf.hitches_logged < 5u && s_total_pres_hitches < 50u) {
                     auto& hr = g_perf.pending_hitches[g_perf.hitches_logged++];
@@ -3599,6 +4065,9 @@ RecompD3dPresenterError d3d_backend_submit(
                     hr.draws = presenter->draws_in_frame;
                     hr.tex_up = presenter->tex_uploads_in_frame;
                     hr.dyn_kb = presenter->dyn_offset / 1024u;
+                    hr.ntread_ms = perfMs(nt_ticks);
+                    hr.ntread_calls = nt_calls;
+                    hr.ntread_kb = (uint32_t)(nt_bytes / 1024u);
                 }
             }
             g_perf.last_present = now;
@@ -3663,16 +4132,34 @@ RecompD3dPresenterError d3d_backend_submit(
                 g_perf.pacing_misses_logged = 0;
                 for (uint32_t hi = 0; hi < g_perf.hitches_logged; ++hi) {
                     const auto& hr = g_perf.pending_hitches[hi];
-                    printf("[Hitch-Pres] frame=%u wall=%.2fms (guest_net=%.2fms backend=%.2fms [draw=%.2f vtx=%.2f tex=%.2f aud=%.2f wait=%.2f]) draws=%u tex_up=%u dyn_kb=%u\n",
-                           hr.frame, hr.wall_ms, hr.guest_ms, hr.back_ms,
+                    printf("[Hitch-Pres] frame=%u wall=%.2fms (guest_net=%.2fms [ntread=%.2fms(%u/%uKB)] backend=%.2fms [draw=%.2f vtx=%.2f tex=%.2f aud=%.2f wait=%.2f]) draws=%u tex_up=%u dyn_kb=%u\n",
+                           hr.frame, hr.wall_ms, hr.guest_ms, hr.ntread_ms, hr.ntread_calls, hr.ntread_kb, hr.back_ms,
                            hr.draw_ms, hr.vtx_ms, hr.tex_ms, hr.aud_ms, hr.wait_ms,
                            hr.draws, hr.tex_up, hr.dyn_kb);
+                }
+                if (g_perf.block_ntread_calls > 0) {
+                    printf("[NtReadProf] 120f_tot: calls=%u bytes=%.2fMB io=%.2fms\n",
+                           g_perf.block_ntread_calls,
+                           (double)g_perf.block_ntread_bytes / (1024.0 * 1024.0),
+                           perfMs(g_perf.block_ntread_ticks));
+                    g_perf.block_ntread_ticks = 0;
+                    g_perf.block_ntread_calls = 0;
+                    g_perf.block_ntread_bytes = 0;
                 }
                 printf("[Perf] per-frame ms: guest_cpu(wall)=%.2f backend=%.2f [vtx_cpu=%.2f tex=%.2f audio_pump=%.2f "
                        "gpu_fence_wait=%.2f vsync_acquire=%.2f draw_total=%.2f present=%.2f]\n",
                        guest, backend, perfMs(g_perf.t_vtx) / n, perfMs(g_perf.t_tex) / n,
                        perfMs(g_perf.t_audio_pump) / n, perfMs(g_perf.t_fence) / n,
                        perfMs(g_perf.t_acquire) / n, perfMs(g_perf.t_draw_total) / n, perfMs(g_perf.t_present) / n);
+                if (g_hd_prof.key_calls > 0 || g_hd_prof.hd_hits > 0 || g_hd_prof.pool_wraps > 0) {
+                    printf("[HdTexProf] 120f_tot: key=%.2fms(%u) sd_io=%.2fms hd_up=%.2fms(%u hits, small_bc=%u) pool_wraps=%u pool_mb=%.1f/%u\n",
+                           perfMs(g_hd_prof.key_ns), g_hd_prof.key_calls,
+                           perfMs(g_hd_prof.io_ns), perfMs(g_hd_prof.up_ns),
+                           g_hd_prof.hd_hits, g_hd_prof.hd_small_bc, g_hd_prof.pool_wraps,
+                           (double)presenter->tex_pool_offset / (1024.0 * 1024.0),
+                           TEX_POOL_SIZE / (1024 * 1024));
+                    g_hd_prof = {};
+                }
                 printf("[Perf] per-frame load: draws=%.0f (max %u) verts=%.0f idx=%.0f vtx_mb=%.2f | paths(draws): pre=%u prog=%u ff=%u (gpu=%u cpu=%u) skin=%u lit=%u"
                        " | verts: pre=%u prog=%u ff=%u skin=%u | fsh: null=%u(alpha=%u) fast=%u comb2=%u gen=%u\n",
                        g_perf.draws / n, g_perf.max_draws, g_perf.verts / n, g_perf.idx / n,

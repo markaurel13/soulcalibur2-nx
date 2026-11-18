@@ -17,9 +17,6 @@ int flock(int fd, int operation) {
     return 0;
 }
 
-void recomp_d3d_textures_configure(const char *replace_folder, const char *dump_folder) {
-    (void)replace_folder; (void)dump_folder;
-}
 void recomp_d3d_set_shader_preset(const char *path) { (void)path; }
 void sc2_touch_set_menu(bool open) { (void)open; }
 }

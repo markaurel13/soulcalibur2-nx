@@ -234,6 +234,7 @@ set(RUNTIME_SOURCES
     ${RUNTIME_DIR}/d3d_vblank.cpp
     ${RUNTIME_DIR}/d3d_draw_model.c
     ${RUNTIME_DIR}/d3d_texture_model.c
+    ${RUNTIME_DIR}/d3d_texture_replace.cpp
     ${RUNTIME_DIR}/d3d_pixel_program.cpp
     ${RUNTIME_DIR}/d3d_device_model.c
     ${RUNTIME_DIR}/d3d_light_model.c
@@ -400,6 +401,8 @@ target_link_options(soulcalibur2
     -Wl,--wrap=recomp_audio_output_submit
     -Wl,--wrap=recomp_audio_output_reset_voice
     -Wl,--wrap=CreateFileA
+    -Wl,--wrap=ReadFile
+    -Wl,--wrap=CloseHandle
     -Wl,--wrap=sub_000843D0
     -Wl,--wrap=sub_0004B630
     -Wl,--wrap=sub_0004D090
