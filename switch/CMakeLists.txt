@@ -309,6 +309,8 @@ set(GAME_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/sc2_menu.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/sc2_training.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/sc2_guest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/sc2_guest_gallery.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/sc2_guest_items.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/sc2_netplay.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/sc2_state.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/sc2_frame.cpp

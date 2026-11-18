@@ -25,6 +25,15 @@ void ApplyGuestHeihachi();
    once the XBE is in memory. */
 bool ApplyGuestRoster(const char *path);
 
+/* Whether the guests' file at `path` was built from this program's release's disc (US or European: their menus are
+   numbered otherwise, guest/build.cpp's Layout). Says why on stderr when not; the game then reads the disc's own
+   root.olk, without the guests. */
+bool GuestFileMatches(const char *path);
+
+/* The Art Gallery's picture in a gallery's slot (0 Hi-Res, 1 Illustrations, 2 Special; 45 slots each): its /2
+   entry in root.olk, as the program's table has it now (with the guests' after ApplyGuestRoster), or -1 for none. */
+int32_t GalleryPicture(int gallery, int slot);
+
 } // namespace sc2
 
 extern "C" {
@@ -43,6 +52,11 @@ int sc2_guest_profile_item(uint32_t character);
 int sc2_guest_fifth_column(void);
 /* Nonzero when the select grid is laid out in rows of five, Random alone in the sixth (sc2_guest.cpp, BalanceGrid). */
 int sc2_select_grid_balanced(void);
+
+/* A guest's weapon 2-11 as an item of its own (sc2_guest_items.c), or -1 */
+int sc2_guest_weapon_item(uint32_t character, uint32_t weapon);
+/* Every guest's weapon had (the menu's Unlock everything) */
+void sc2_guest_items_all(void);
 
 /* The Art Gallery's Hi-Res pictures: 20, or more with the guests' (sc2_guest.cpp, ApplyGallery). */
 int sc2_guest_hires_pictures(void);

@@ -279,13 +279,16 @@ static bool applyFull300UnlockAll(void) {
     if (!sc2::TrainingUnlockAll()) return false;
     uint8_t *items = recomp_memory(0x3bb368u, 300u);
     std::memset(items, 3u, 300u);
-    uint8_t *packed = recomp_memory(0x3bb1f0u, 75u);
+    uint8_t *packed = recomp_memory(0x3bb1f0u, 76u);
     for (uint32_t n = 0; n < 75u; ++n) {
         packed[n] = uint8_t((items[4u * n] & 3u) |
                             ((items[4u * n + 1u] & 3u) << 2) |
                             ((items[4u * n + 2u] & 3u) << 4) |
                             ((items[4u * n + 3u] & 3u) << 6));
     }
+    // Unlock Link's (400-409) and Heihachi's (410-419) 20 extra weapon bits (sc2_guest_items.c)
+    packed[75] = 0xFFu;
+    *recomp_memory(0x3bb34cu + 15u, 1u) = 0xFFu;
     return true;
 }
 

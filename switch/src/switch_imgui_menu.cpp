@@ -115,11 +115,12 @@ ImDrawData *SwitchImGui_BuildModMenu(
     ImVec2 win_sz = ImGui::GetWindowSize();
 
     // Header
+    (void)applied;
     ImGui::TextColored(theme.accent, "SOULCALIBUR II NX");
-    const char *badge = applied ? "UNLOCKED 300/300" : "MOD MENU";
+    const char *badge = "MOD MENU";
     ImVec2 badge_sz = ImGui::CalcTextSize(badge);
     ImGui::SameLine(win_w - 26.0f - badge_sz.x);
-    ImGui::TextColored(applied ? ImVec4(0.35f, 0.92f, 0.48f, 1.0f) : ImVec4(0.68f, 0.72f, 0.80f, 1.0f), "%s", badge);
+    ImGui::TextColored(ImVec4(0.68f, 0.72f, 0.80f, 1.0f), "%s", badge);
 
     ImGui::Dummy(ImVec2(0.0f, 4.0f));
     float sep_y = ImGui::GetCursorScreenPos().y;
@@ -154,7 +155,7 @@ ImDrawData *SwitchImGui_BuildModMenu(
         },
         {
             "Button Layout",
-            nintendo_layout ? "< NINTENDO (A=Right) >" : "< XBOX (A=Bottom) >",
+            nintendo_layout ? "< NINTENDO >" : "< XBOX >",
             theme.accent,
             "Swaps A/B in menus for Nintendo controllers while keeping Kick/Guard in combat."
         },
