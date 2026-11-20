@@ -629,6 +629,7 @@ async function buildSwitchPackageZip() {
     async function streamZip(entryIter, onChunk) {
       const zipResponse = downloadZip(entryIter);
       const reader = zipResponse.body.getReader();
+      let lastYieldBytes = written;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -648,7 +649,31 @@ async function buildSwitchPackageZip() {
           log(`Packaging Switch ZIP: ${nextLogPct}% (${formatBytes(written)})...`);
           nextLogPct += 25;
         }
+        if (written - lastYieldBytes >= 16 * 1024 * 1024) {
+          lastYieldBytes = written;
+          await new Promise((r) => setTimeout(r, 0));
+        }
       }
+    }
+
+    async function streamZipToBlob(entryIter) {
+      const blobParts = [];
+      let batch = [];
+      let batchBytes = 0;
+      await streamZip(entryIter, (chunk) => {
+        batch.push(chunk);
+        batchBytes += chunk.byteLength;
+        if (batchBytes >= 4 * 1024 * 1024) {
+          blobParts.push(new Blob(batch));
+          batch = [];
+          batchBytes = 0;
+        }
+      });
+      if (batch.length > 0) {
+        blobParts.push(new Blob(batch));
+        batch = [];
+      }
+      return new Blob(blobParts, { type: "application/zip" });
     }
 
     if (saveHandle) {
@@ -663,25 +688,15 @@ async function buildSwitchPackageZip() {
       log("Done! soulcalibur2_nx_package.zip saved (switch/soulcalibur2/ structure).", "ok");
     } else if (splitForBlobLimit) {
       log("Package > 1.85 GB without File System Access API: splitting into 2 ZIPs to avoid browser 2 GB Blob limit.", "warn");
-      const baseChunks = [];
-      await streamZip(generateAllEntries(true, false), (chunk) => {
-        baseChunks.push(chunk);
-      });
-      const baseBlob = new Blob(baseChunks, { type: "application/zip" });
-      baseChunks.length = 0;
+      const baseBlob = await streamZipToBlob(generateAllEntries(true, false));
 
       if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
       state.zipUrl = URL.createObjectURL(baseBlob);
       triggerZipDownload(state.zipUrl, "soulcalibur2_nx_package.zip");
       log("Downloading soulcalibur2_nx_package.zip; packaging soulcalibur2_nx_textures.zip next...", "ok");
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 1000));
 
-      const texChunks = [];
-      await streamZip(generateAllEntries(false, true), (chunk) => {
-        texChunks.push(chunk);
-      });
-      const texBlob = new Blob(texChunks, { type: "application/zip" });
-      texChunks.length = 0;
+      const texBlob = await streamZipToBlob(generateAllEntries(false, true));
 
       if (state.texZipUrl) URL.revokeObjectURL(state.texZipUrl);
       state.texZipUrl = URL.createObjectURL(texBlob);
@@ -690,12 +705,7 @@ async function buildSwitchPackageZip() {
       setProgress(100, "Both ZIPs downloaded! Extract both to the root of your microSD card.");
       log("Done! Downloaded soulcalibur2_nx_package.zip + soulcalibur2_nx_textures.zip.", "ok");
     } else {
-      const chunks = [];
-      await streamZip(generateAllEntries(true, true), (chunk) => {
-        chunks.push(chunk);
-      });
-      const zipBlob = new Blob(chunks, { type: "application/zip" });
-      chunks.length = 0;
+      const zipBlob = await streamZipToBlob(generateAllEntries(true, true));
       if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
       if (state.texZipUrl) {
         URL.revokeObjectURL(state.texZipUrl);
