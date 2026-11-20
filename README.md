@@ -36,7 +36,7 @@ Unlike traditional emulation, the original game runs natively on Nintendo Switch
      - **GameCube** (`.iso` / `.gcm` / `.ciso` / `.nkit.iso`) — Extracts Link
      - **PlayStation 2** (`.iso`) — Extracts Heihachi
    - *(Optional)* Drop a compatible Dolphin **HD Textures Pack** archive (`.7z` / `.zip` / `.rar`) — unused textures are skipped and combined textures are converted automatically into `switch/soulcalibur2/textures/`.
-   - Click **Build Switch Package** to generate `soulcalibur2_nx_package.zip` and extract it to the root of your Nintendo Switch microSD card (`sdmc:/`).
+   - Click **Build Switch Package** to generate `soulcalibur2_nx_package.zip` and extract it to the root of your Nintendo Switch microSD card (`sdmc:/`). *(In browsers without direct disk saving like Brave/Firefox, if HD Textures push the package over 1.85 GB, it will download `soulcalibur2_nx_package.zip` + `soulcalibur2_nx_textures.zip` separately — extract both to `sdmc:/`.)*
 
 2. **Install the Latest `soulcalibur2.nro`:**
    - Go to the **[Releases](https://github.com/markaurel13/soulcalibur2-nx/releases)** page and download the latest `soulcalibur2.nro`.
