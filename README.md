@@ -35,7 +35,8 @@ Unlike traditional emulation, the original game runs natively on Nintendo Switch
      - **Xbox** (`.iso` / `.xiso`) — Base game + Spawn
      - **GameCube** (`.iso` / `.gcm` / `.ciso` / `.nkit.iso`) — Extracts Link
      - **PlayStation 2** (`.iso`) — Extracts Heihachi
-   - Click **Build Switch Package** to generate `soulcalibur2_nx_package.zip` (~1.34 GB) and extract it to the root of your Nintendo Switch microSD card (`sdmc:/`).
+   - *(Optional)* Drop a compatible Dolphin **HD Textures Pack** archive (`.7z` / `.zip` / `.rar`) — unused textures are skipped and combined textures are converted automatically into `switch/soulcalibur2/textures/`.
+   - Click **Build Switch Package** to generate `soulcalibur2_nx_package.zip` and extract it to the root of your Nintendo Switch microSD card (`sdmc:/`).
 
 2. **Install the Latest `soulcalibur2.nro`:**
    - Go to the **[Releases](https://github.com/markaurel13/soulcalibur2-nx/releases)** page and download the latest `soulcalibur2.nro`.
@@ -52,6 +53,7 @@ sdmc:/
         ├── guests.olk              # Combined game assets + Link & Heihachi (from Web Installer)
         ├── movie.afs               # FMV cutscenes
         ├── bgm.afs                 # Background music
+        └── textures/               # Optional converted HD textures (from Web Installer)
 ```
 
 > [!TIP]
@@ -75,7 +77,7 @@ All Xbox buttons are mapped positionally to the Nintendo Switch controller:
 | **`ZL`** | `LT` (Left Trigger) | `A + G` (Throw) |
 | **`ZR`** | `RT` (Right Trigger) | `B + G` (Throw) |
 | **`Plus (+)`** | `Start` | Start / Pause Menu |
-| **`Minus (-)`** | `Back` | Back / Practice Options |
+| **`Minus (-)`** | `Back` | Back / Practice Options (Tap) · **Hold (1s) to open Mod Menu** |
 | **`L3` / `R3`** *(Stick Clicks)* | `L-Thumb` / `R-Thumb` | Custom / Macro Bindings |
 
 ---
