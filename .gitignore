@@ -58,6 +58,7 @@ tmp/
 *.map
 # (the texture map: names only, built into the launcher, tools/textures/build_map.py)
 !tools/textures/GRSEAF.map
+!docs/installer/GRSEAF.map
 *.cdb
 __pycache__/
 *.pyc
