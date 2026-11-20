@@ -125,9 +125,20 @@ RecompFunction __wrap_recomp_lookup_manual(uint32_t guest_address) {
         s_lk_neg[guest_address >> 3] |= (uint8_t)(1u << (guest_address & 7u));
     return fn;
 }
+extern uint32_t recomp_last_dispatch_address;
+RecompFunction __real_recomp_lookup(uint32_t xbox_va);
 void __real_recomp_dispatch_indirect_site(uint32_t a, uint32_t e, const char *m, int l);
 void __wrap_recomp_dispatch_indirect_site(uint32_t a, uint32_t e, const char *m, int l) {
     ++s_ind_calls;
+    if (recomp_runtime.function_count == 0u) {
+        RecompFunction fn = __wrap_recomp_lookup_manual(a);
+        if (!fn) fn = __real_recomp_lookup(a);
+        if (fn != NULL) {
+            recomp_last_dispatch_address = a;
+            fn();
+            return;
+        }
+    }
     __real_recomp_dispatch_indirect_site(a, e, m, l);
 }
 static void sc2_phase0_report(void);
@@ -289,10 +300,10 @@ void __wrap_recomp_kernel_wait_for_vblank(uint64_t deadline_ns) {
     if (now_ns >= deadline_ns) return;
 
     uint64_t rem_ns = deadline_ns - now_ns;
-    // Leave a 2.0 ms spin margin so Horizon's svcSleepThread wakeup jitter
+    // Leave a 3.5 ms spin margin so Horizon's svcSleepThread wakeup jitter
     // does not overshoot the 16.666 ms deadline.
-    if (rem_ns > 2500000ULL) {
-        svcSleepThread((s64)(rem_ns - 2000000ULL));
+    if (rem_ns > 4000000ULL) {
+        svcSleepThread((s64)(rem_ns - 3500000ULL));
     }
     while (recomp_xapi_performance_counter() < deadline_ns) {
         __asm__ __volatile__("yield");
@@ -331,8 +342,6 @@ void __wrap_recomp_d3d_wait_present(void) {
 }
 
 // ---- Wrap recomp_lookup ----
-extern uint32_t recomp_last_dispatch_address;
-RecompFunction __real_recomp_lookup(uint32_t xbox_va);
 RecompFunction __wrap_recomp_lookup(uint32_t xbox_va) {
     recomp_last_dispatch_address = xbox_va;
     return __real_recomp_lookup(xbox_va);

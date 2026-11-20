@@ -1,4 +1,5 @@
 import { DiscParsers } from "./xiso.js?v=20261115m";
+import { loadTextureMap, planTexturePack, buildTextureDdsBytes } from "./tex_convert.js?v=20261118f";
 import { downloadZip } from "https://cdn.jsdelivr.net/npm/client-zip@2.4.5/+esm";
 
 const REPO_OWNER = "markaurel13";
@@ -40,10 +41,17 @@ const state = {
     "slus_206.43": null,
   },
   guestsBlob: null,
+  textureJobs: [],
+  textureDirectCount: 0,
+  textureConvertCount: 0,
+  texturesBytes: 0,
+  textureMap: null,
   zipUrl: null,
   packageBuilt: false,
   pyodide: null,
   isBuilding: false,
+  isScanningTextures: false,
+  textureScanText: "",
 };
 
 function resetBuiltPackage() {
@@ -122,11 +130,22 @@ function updateUI() {
     ? `<span class="pill ok">✓ Heihachi ready (~15.9 MB)</span>`
     : `<span class="pill missing">✗ PS2 ISO (Heihachi)</span>`;
 
+  const hasTextures = state.textureJobs.length > 0;
+  if (state.isScanningTextures) {
+    $("textures-status").innerHTML = `<span class="pill" style="background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.4); color: #fbbf24;">⏳ ${state.textureScanText || "Loading HD textures..."}</span>`;
+  } else {
+    $("textures-status").innerHTML = hasTextures
+      ? `<span class="pill ok">✓ ${state.textureJobs.length} final textures (${state.textureConvertCount > 0 ? "~" : ""}${formatBytes(state.texturesBytes)})</span>`
+      : `<span class="pill missing">✗ No HD textures selected</span>`;
+  }
+
   const canBuild = readyXbox && readyGc && readyPs2;
   const btn = $("btn-build-zip");
-  btn.disabled = !canBuild || state.isBuilding;
+  btn.disabled = !canBuild || state.isBuilding || state.isScanningTextures;
   if (state.isBuilding) {
     btn.textContent = "⏳ Building Switch Package...";
+  } else if (state.isScanningTextures) {
+    btn.textContent = "⏳ Loading HD Textures...";
   } else if (state.packageBuilt) {
     btn.textContent = "⬇ Download Again";
   } else {
@@ -144,9 +163,11 @@ function updateUI() {
       : state.xbox["root.olk"].blob.size + 38 * 1024 * 1024;
     const nroBytes = state.nroBlob ? state.nroBlob.blob.size : 23 * 1024 * 1024;
     const prefix = state.guestsBlob ? "Final package size" : "Estimated final size";
-    hint.textContent = `${prefix}: ~${formatBytes(xboxOtherBytes + guestsBytes + nroBytes)}`;
+    hint.textContent = `${prefix}: ~${formatBytes(xboxOtherBytes + guestsBytes + nroBytes + state.texturesBytes)}`;
   } else {
-    hint.textContent = "Estimated final size: ~1.34 GB";
+    hint.textContent = state.texturesBytes > 0
+      ? `Estimated final size: ~1.34 GB + ${formatBytes(state.texturesBytes)} HD textures`
+      : "Estimated final size: ~1.34 GB";
   }
 }
 
@@ -462,6 +483,51 @@ async function exportToDirectory() {
   }
 }
 
+function createTextureConverter() {
+  let worker = null;
+  let nextId = 1;
+  const pending = new Map();
+  try {
+    worker = new Worker("./installer/tex_worker.js?v=20261118f", { type: "module" });
+    worker.onmessage = (e) => {
+      const { id, bytes, error } = e.data;
+      const entry = pending.get(id);
+      if (!entry) return;
+      pending.delete(id);
+      if (error) entry.reject(new Error(error));
+      else entry.resolve(bytes);
+    };
+    worker.onerror = (e) => {
+      const err = new Error(e.message || "Texture worker error");
+      for (const entry of pending.values()) entry.reject(err);
+      pending.clear();
+      worker.terminate();
+      worker = null;
+    };
+  } catch {
+    worker = null;
+  }
+
+  return {
+    convert(job) {
+      if (job.kind === "direct") return Promise.resolve(job.file);
+      if (!worker) return buildTextureDdsBytes(job);
+      return new Promise((resolve, reject) => {
+        const id = nextId++;
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id, job });
+      });
+    },
+    close() {
+      if (worker) {
+        worker.terminate();
+        worker = null;
+      }
+      pending.clear();
+    },
+  };
+}
+
 async function buildSwitchPackageZip() {
   if (state.isBuilding) return;
   if (state.packageBuilt && state.zipUrl) {
@@ -500,15 +566,44 @@ async function buildSwitchPackageZip() {
       entries.push({ name: `switch/soulcalibur2/${state.nroBlob.name}`, input: state.nroBlob.blob });
     }
 
-    const totalBytes = entries.reduce((acc, e) => acc + e.input.size, 0);
+    const totalBaseBytes = entries.reduce((acc, e) => acc + e.input.size, 0);
+    const totalBytes = totalBaseBytes + state.texturesBytes;
     setProgress(75, "Packaging switch/soulcalibur2/ into ZIP...");
-    log(`Packaging Switch ZIP (${formatBytes(totalBytes)})...`);
+    log(`Packaging Switch ZIP (~${formatBytes(totalBytes)})...`);
 
-    const zipResponse = downloadZip(entries);
-    const reader = zipResponse.body.getReader();
+    const texConverter = state.textureConvertCount > 0 ? createTextureConverter() : null;
+    const totTex = state.textureJobs.length;
+    let doneTex = 0;
     let written = 0;
     let nextLogPct = 25;
     let lastUiBytes = 0;
+
+    async function* generateAllEntries() {
+      try {
+        for (const e of entries) yield e;
+        for (const job of state.textureJobs) {
+          const input = job.kind === "direct"
+            ? job.file
+            : await texConverter.convert(job);
+          doneTex++;
+          if (doneTex % 50 === 0 || doneTex === totTex) {
+            setProgress(
+              88 + (doneTex / totTex) * 11,
+              `Packaging HD textures: ${doneTex} / ${totTex} (${formatBytes(written)})...`
+            );
+            if (doneTex % 250 === 0 || doneTex === totTex) {
+              log(`Converting/packaging HD textures: ${doneTex} / ${totTex}...`);
+            }
+          }
+          yield { name: `switch/soulcalibur2/textures/${job.name}`, input };
+        }
+      } finally {
+        if (texConverter) texConverter.close();
+      }
+    }
+
+    const zipResponse = downloadZip(generateAllEntries());
+    const reader = zipResponse.body.getReader();
 
     async function consumeZipStream(onChunk) {
       while (true) {
@@ -516,17 +611,18 @@ async function buildSwitchPackageZip() {
         if (done) break;
         await onChunk(value);
         written += value.byteLength;
-        const zipPct = Math.min(100, (written / totalBytes) * 100);
-        if (written - lastUiBytes >= 4 * 1024 * 1024 || zipPct >= 100) {
+        const zipPct = Math.min(99, (written / totalBytes) * 100);
+        if (doneTex === 0 && written - lastUiBytes >= 4 * 1024 * 1024) {
           lastUiBytes = written;
-          const pct = 75 + (zipPct / 100) * 25;
+          const baseSpan = totTex > 0 ? 13 : 24;
+          const basePct = Math.min(99, (written / totalBaseBytes) * 100);
           setProgress(
-            pct,
-            `Packaging ZIP: ${formatBytes(written)} / ${formatBytes(totalBytes)} (${Math.floor(zipPct)}%)`
+            75 + (basePct / 100) * baseSpan,
+            `Packaging ZIP: ${formatBytes(written)} (${Math.floor(basePct)}%)`
           );
         }
-        while (zipPct >= nextLogPct && nextLogPct <= 100) {
-          log(`Packaging Switch ZIP: ${nextLogPct}% (${formatBytes(written)} / ${formatBytes(totalBytes)})...`);
+        while (zipPct >= nextLogPct && nextLogPct <= 75) {
+          log(`Packaging Switch ZIP: ${nextLogPct}% (${formatBytes(written)})...`);
           nextLogPct += 25;
         }
       }
@@ -548,6 +644,7 @@ async function buildSwitchPackageZip() {
         chunks.push(chunk);
       });
       const zipBlob = new Blob(chunks, { type: "application/zip" });
+      chunks.length = 0;
       if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
       state.zipUrl = URL.createObjectURL(zipBlob);
       state.packageBuilt = true;
@@ -565,7 +662,119 @@ async function buildSwitchPackageZip() {
   }
 }
 
-function wireDropzone(zoneId, inputId, handler) {
+async function readEntryFiles(entry, out) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    out.push(file);
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    while (true) {
+      const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+      if (!batch.length) break;
+      for (const child of batch) {
+        await readEntryFiles(child, out);
+      }
+    }
+  }
+}
+
+function getValidTextureStems(mapData) {
+  const stems = new Set(mapData.validHashes);
+  for (const r of mapData.rules) {
+    for (const s of r.src0) stems.add(s);
+    if (r.src1) for (const s of r.src1) stems.add(s);
+  }
+  return Array.from(stems);
+}
+
+function extractTextureArchiveInWorker(archiveFile, mapData) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker("./installer/archive_worker.js?v=20261118n", { type: "module" });
+    const validStems = getValidTextureStems(mapData);
+    let lastLogPct = 0;
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === "log") {
+        log(msg.message);
+      } else if (msg.type === "progress") {
+        state.textureScanText = `Extracting archive: ${msg.pct}%`;
+        updateUI();
+        if (msg.pct >= lastLogPct + 25 || msg.pct === 100) {
+          lastLogPct = msg.pct;
+          log(`Extracting ${archiveFile.name}: ${msg.pct}%...`);
+        }
+      } else if (msg.type === "collect") {
+        state.textureScanText = `Indexing textures (${msg.count})...`;
+        updateUI();
+      } else if (msg.type === "done") {
+        worker.terminate();
+        resolve(msg.files);
+      } else if (msg.type === "error") {
+        worker.terminate();
+        reject(new Error(msg.error || "Archive extraction failed"));
+      }
+    };
+    worker.onerror = (e) => {
+      worker.terminate();
+      reject(new Error(e.message || "Archive worker crashed"));
+    };
+    worker.postMessage({ archiveFile, validStems });
+  });
+}
+
+async function applyTextureFiles(fileArray) {
+  state.isScanningTextures = true;
+  state.textureScanText = "Loading HD textures...";
+  updateUI();
+  try {
+    if (!state.textureMap) {
+      log("Loading texture map (GRSEAF.map)...");
+      state.textureMap = await loadTextureMap();
+    }
+
+    let sourceFiles = fileArray;
+    const hasDirectTex = fileArray.some((f) => {
+      const l = f.name.toLowerCase();
+      return l.endsWith(".dds") || l.endsWith(".png");
+    });
+    if (!hasDirectTex) {
+      const archive = fileArray.find((f) => {
+        const l = f.name.toLowerCase();
+        return l.endsWith(".7z") || l.endsWith(".zip") || l.endsWith(".rar");
+      });
+      if (archive) {
+        log(`Extracting '${archive.name}' (${formatBytes(archive.size)}) in browser...`);
+        sourceFiles = await extractTextureArchiveInWorker(archive, state.textureMap);
+      }
+    }
+
+    const plan = planTexturePack(sourceFiles, state.textureMap);
+    if (plan.jobs.length === 0) {
+      log("No matching Soulcalibur II HD textures (.dds/.png) found in selection.", "warn");
+      return;
+    }
+    state.textureJobs = plan.jobs;
+    state.textureDirectCount = plan.directCount;
+    state.textureConvertCount = plan.convertCount;
+    state.texturesBytes = plan.jobs.reduce(
+      (acc, j) => acc + (j.kind === "direct" ? j.file.size : j.f0.size),
+      0
+    );
+    resetBuiltPackage();
+    log(
+      `Ready: ${plan.jobs.length} final textures (~${formatBytes(state.texturesBytes)}; ${plan.directCount} direct, ${plan.convertCount} converted on package, ${plan.skippedCount} unused skipped).`,
+      "ok"
+    );
+  } catch (err) {
+    log(`Error scanning HD textures: ${err.message}`, "error");
+  } finally {
+    state.isScanningTextures = false;
+    state.textureScanText = "";
+    updateUI();
+  }
+}
+
+function wireDropzone(zoneId, inputId, handler, onDropTransfer = null) {
   const zone = $(zoneId);
   const input = $(inputId);
   zone.addEventListener("click", () => input.click());
@@ -577,10 +786,14 @@ function wireDropzone(zoneId, inputId, handler) {
     zone.classList.add("dragover");
   });
   zone.addEventListener("dragleave", () => zone.classList.remove("dragover"));
-  zone.addEventListener("drop", (e) => {
+  zone.addEventListener("drop", async (e) => {
     e.preventDefault();
     zone.classList.remove("dragover");
-    if (e.dataTransfer.files.length) handler(e.dataTransfer.files);
+    if (onDropTransfer) {
+      await onDropTransfer(e.dataTransfer);
+    } else if (e.dataTransfer.files.length) {
+      handler(e.dataTransfer.files);
+    }
   });
 }
 
@@ -588,6 +801,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireDropzone("drop-xbox", "file-xbox", handleXboxInput);
   wireDropzone("drop-gc", "file-gc", handleGameCubeInput);
   wireDropzone("drop-ps2", "file-ps2", handlePs2Input);
+  wireDropzone("drop-textures", "file-textures", (files) => applyTextureFiles(Array.from(files)));
   $("btn-build-zip").addEventListener("click", buildSwitchPackageZip);
   $("modal-close").addEventListener("click", () => ($("region-modal").hidden = true));
   $("region-modal").addEventListener("click", (e) => {

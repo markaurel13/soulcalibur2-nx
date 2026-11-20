@@ -16,6 +16,6 @@ ImDrawData *SwitchImGui_BuildModMenu(
     bool hd_avail,
     bool hd_mipmaps,
     int aniso_level,
-    bool handheld_ssaa,
+    int msaa_level,
     int cursor,
     bool applied);

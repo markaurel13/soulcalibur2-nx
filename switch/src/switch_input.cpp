@@ -27,8 +27,8 @@ static std::atomic<bool> s_mod_nintendo_layout{false};
 static std::atomic<bool> s_mod_hd_textures{false};
 static std::atomic<bool> s_mod_hd_available{false};
 static std::atomic<bool> s_mod_hd_mipmaps{true};
-static std::atomic<int>  s_mod_aniso_level{3}; // 0=OFF(1x), 1=4x, 2=8x, 3=16x
-static std::atomic<bool> s_mod_handheld_ssaa{true};
+static std::atomic<int>  s_mod_aniso_level{1}; // 0=OFF(1x), 1=4x, 2=8x, 3=16x
+static std::atomic<int>  s_mod_msaa_level{0};  // 0=OFF, 1=2x, 2=4x
 static std::atomic<int>  s_mod_cursor{0};
 static std::atomic<bool> s_mod_unlock_applied{false};
 static bool s_mod_config_loaded = false;
@@ -54,7 +54,7 @@ static void applyHdTexturesConfig(bool enabled) {
 }
 
 static void saveModConfig(bool unlock_all, bool nintendo_layout, bool hd_textures,
-                          bool hd_mipmaps = true, int aniso_level = 3, bool handheld_ssaa = true) {
+                          bool hd_mipmaps = true, int aniso_level = 1, int msaa_level = 0) {
     mkdir("sdmc:/switch/soulcalibur2", 0777);
     mkdir("sdmc:/switch/soulcalibur2/save", 0777);
     FILE *f = fopen(MOD_CONFIG_PATH, "w");
@@ -64,7 +64,7 @@ static void saveModConfig(bool unlock_all, bool nintendo_layout, bool hd_texture
         fprintf(f, "hd_textures=%s\n", hd_textures ? "ON" : "OFF");
         fprintf(f, "hd_mipmaps=%s\n", hd_mipmaps ? "ON" : "OFF");
         fprintf(f, "aniso_level=%d\n", aniso_level);
-        fprintf(f, "handheld_ssaa=%s\n", handheld_ssaa ? "ON" : "OFF");
+        fprintf(f, "msaa_level=%d\n", msaa_level);
         fclose(f);
     }
 }
@@ -79,8 +79,8 @@ static void loadOrCreateModConfig(void) {
         s_mod_nintendo_layout.store(false, std::memory_order_release);
         s_mod_hd_textures.store(hd_avail, std::memory_order_release);
         s_mod_hd_mipmaps.store(true, std::memory_order_release);
-        s_mod_aniso_level.store(3, std::memory_order_release);
-        s_mod_handheld_ssaa.store(true, std::memory_order_release);
+        s_mod_aniso_level.store(1, std::memory_order_release);
+        s_mod_msaa_level.store(0, std::memory_order_release);
         saveModConfig(false, false, hd_avail);
         applyHdTexturesConfig(hd_avail);
         printf("[ModMenu] Created default %s (unlock_all=OFF, button_layout=XBOX, hd_textures=%s)\n",
@@ -94,15 +94,22 @@ static void loadOrCreateModConfig(void) {
     bool saw_hd_tex = false;
     bool hd_tex_in_file = false;
     bool hd_mipmaps = true;
-    int aniso_level = 3;
-    bool handheld_ssaa = true;
+    int aniso_level = 1;
+    int msaa_level = 0;
+    bool saw_unlock = false;
+    bool saw_layout = false;
+    bool saw_mipmaps = false;
+    bool saw_aniso = false;
+    bool saw_msaa = false;
     while (fgets(line, sizeof(line), f)) {
         if (strncmp(line, "unlock_all=", 11) == 0) {
+            saw_unlock = true;
             const char *p = line + 11;
             if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0 || p[0] == '1') {
                 val = true;
             }
         } else if (strncmp(line, "button_layout=", 14) == 0) {
+            saw_layout = true;
             const char *p = line + 14;
             if (strncmp(p, "NINTENDO", 8) == 0 || strncmp(p, "nintendo", 8) == 0 || p[0] == '1') {
                 nintendo = true;
@@ -118,6 +125,7 @@ static void loadOrCreateModConfig(void) {
                 hd_tex_in_file = true;
             }
         } else if (strncmp(line, "hd_mipmaps=", 11) == 0) {
+            saw_mipmaps = true;
             const char *p = line + 11;
             if (strncmp(p, "OFF", 3) == 0 || strncmp(p, "off", 3) == 0 || p[0] == '0') {
                 hd_mipmaps = false;
@@ -126,13 +134,22 @@ static void loadOrCreateModConfig(void) {
             }
         } else if (strncmp(line, "aniso_level=", 12) == 0) {
             int a = atoi(line + 12);
-            if (a >= 0 && a < 4) aniso_level = a;
-        } else if (strncmp(line, "handheld_ssaa=", 14) == 0) {
-            const char *p = line + 14;
+            if (a >= 0 && a < 4) {
+                aniso_level = a;
+                saw_aniso = true;
+            }
+        } else if (strncmp(line, "msaa_level=", 11) == 0) {
+            int m = atoi(line + 11);
+            if (m >= 0 && m <= 2) {
+                msaa_level = m;
+                saw_msaa = true;
+            }
+        } else if (strncmp(line, "msaa_2x=", 8) == 0) {
+            const char *p = line + 8;
             if (strncmp(p, "OFF", 3) == 0 || strncmp(p, "off", 3) == 0 || p[0] == '0') {
-                handheld_ssaa = false;
+                msaa_level = 0;
             } else if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0 || p[0] == '1') {
-                handheld_ssaa = true;
+                msaa_level = 1;
             }
         }
     }
@@ -140,28 +157,28 @@ static void loadOrCreateModConfig(void) {
     if (!hd_avail) {
         hd_tex = false;
     }
-    if (!saw_hd_tex || (hd_tex != hd_tex_in_file)) {
-        saveModConfig(val, nintendo, hd_tex, hd_mipmaps, aniso_level, handheld_ssaa);
+    if (!saw_unlock || !saw_layout || !saw_hd_tex || !saw_mipmaps || !saw_aniso || !saw_msaa ||
+        (hd_tex != hd_tex_in_file)) {
+        saveModConfig(val, nintendo, hd_tex, hd_mipmaps, aniso_level, msaa_level);
     }
     s_mod_unlock_all.store(val, std::memory_order_release);
     s_mod_nintendo_layout.store(nintendo, std::memory_order_release);
     s_mod_hd_textures.store(hd_tex, std::memory_order_release);
     s_mod_hd_mipmaps.store(hd_mipmaps, std::memory_order_release);
     s_mod_aniso_level.store(aniso_level, std::memory_order_release);
-    s_mod_handheld_ssaa.store(handheld_ssaa, std::memory_order_release);
+    s_mod_msaa_level.store(msaa_level, std::memory_order_release);
     applyHdTexturesConfig(hd_tex);
-    printf("[ModMenu] Loaded %s (unlock_all=%s, button_layout=%s, hd_textures=%s, mipmaps=%s, af=%d, ssaa=%s)\n",
+    printf("[ModMenu] Loaded %s (unlock_all=%s, button_layout=%s, hd_textures=%s, mipmaps=%s, af=%d, msaa=%d)\n",
            MOD_CONFIG_PATH, val ? "ON" : "OFF", nintendo ? "NINTENDO" : "XBOX",
-           hd_tex ? "ON" : "OFF", hd_mipmaps ? "ON" : "OFF", aniso_level,
-           handheld_ssaa ? "ON" : "OFF");
+           hd_tex ? "ON" : "OFF", hd_mipmaps ? "ON" : "OFF", aniso_level, msaa_level);
 }
 
 static std::atomic<bool> s_ui_unlock_all{false};
 static std::atomic<bool> s_ui_nintendo_layout{false};
 static std::atomic<bool> s_ui_hd_textures{true};
 static std::atomic<bool> s_ui_hd_mipmaps{true};
-static std::atomic<int>  s_ui_aniso_level{3};
-static std::atomic<bool> s_ui_handheld_ssaa{true};
+static std::atomic<int>  s_ui_aniso_level{1};
+static std::atomic<int>  s_ui_msaa_level{0};
 
 extern "C" bool SwitchModMenu_IsOpen(void) {
     return s_mod_menu_open.load(std::memory_order_acquire);
@@ -196,12 +213,12 @@ extern "C" int SwitchModMenu_GetAnisoLevel(void) {
         .load(std::memory_order_acquire);
 }
 
-extern "C" bool SwitchModMenu_GetHandheldSsaa(void) {
-    return s_mod_handheld_ssaa.load(std::memory_order_acquire);
+extern "C" int SwitchModMenu_GetMsaaLevel(void) {
+    return s_mod_msaa_level.load(std::memory_order_acquire);
 }
 
-extern "C" bool SwitchModMenu_GetHandheldSsaaUi(void) {
-    return (s_mod_menu_open.load(std::memory_order_acquire) ? s_ui_handheld_ssaa : s_mod_handheld_ssaa)
+extern "C" int SwitchModMenu_GetMsaaLevelUi(void) {
+    return (s_mod_menu_open.load(std::memory_order_acquire) ? s_ui_msaa_level : s_mod_msaa_level)
         .load(std::memory_order_acquire);
 }
 
@@ -298,7 +315,7 @@ extern "C" void SwitchModMenu_ResetPauseState(void) {
     s_ui_hd_textures.store(s_mod_hd_textures.load(std::memory_order_acquire), std::memory_order_release);
     s_ui_hd_mipmaps.store(s_mod_hd_mipmaps.load(std::memory_order_acquire), std::memory_order_release);
     s_ui_aniso_level.store(s_mod_aniso_level.load(std::memory_order_acquire), std::memory_order_release);
-    s_ui_handheld_ssaa.store(s_mod_handheld_ssaa.load(std::memory_order_acquire), std::memory_order_release);
+    s_ui_msaa_level.store(s_mod_msaa_level.load(std::memory_order_acquire), std::memory_order_release);
     padUpdate(&SwitchInput::s_pads[0]);
     s_pause_prev_held = padGetButtons(&SwitchInput::s_pads[0]);
     HidAnalogStickState st = padGetStickPos(&SwitchInput::s_pads[0], 0);
@@ -380,8 +397,9 @@ extern "C" bool SwitchModMenu_TickPause(void) {
             s_ui_aniso_level.store(next_af, std::memory_order_release);
             need_refresh = true;
         } else if (c == 5) {
-            bool next_ssaa = !s_ui_handheld_ssaa.load(std::memory_order_acquire);
-            s_ui_handheld_ssaa.store(next_ssaa, std::memory_order_release);
+            int ms = s_ui_msaa_level.load(std::memory_order_acquire);
+            int next_ms = press_left ? (ms + 2) % 3 : (ms + 1) % 3;
+            s_ui_msaa_level.store(next_ms, std::memory_order_release);
             need_refresh = true;
         }
     }
@@ -394,27 +412,27 @@ extern "C" void SwitchModMenu_WaitReleaseOnExit(void) {
     bool prev_hd = s_mod_hd_textures.load(std::memory_order_acquire);
     bool prev_mip = s_mod_hd_mipmaps.load(std::memory_order_acquire);
     int prev_af = s_mod_aniso_level.load(std::memory_order_acquire);
-    bool prev_ssaa = s_mod_handheld_ssaa.load(std::memory_order_acquire);
+    int prev_msaa = s_mod_msaa_level.load(std::memory_order_acquire);
     bool new_unlock = s_ui_unlock_all.load(std::memory_order_acquire);
     bool new_nintendo = s_ui_nintendo_layout.load(std::memory_order_acquire);
     bool new_hd = s_ui_hd_textures.load(std::memory_order_acquire);
     bool new_mip = s_ui_hd_mipmaps.load(std::memory_order_acquire);
     int new_af = s_ui_aniso_level.load(std::memory_order_acquire);
-    bool new_ssaa = s_ui_handheld_ssaa.load(std::memory_order_acquire);
+    int new_msaa = s_ui_msaa_level.load(std::memory_order_acquire);
     bool unlock_changed = (new_unlock != prev_unlock);
     bool layout_changed = (new_nintendo != prev_nintendo);
     bool hd_changed = (new_hd != prev_hd);
-    bool gfx_changed = (new_mip != prev_mip) || (new_af != prev_af) || (new_ssaa != prev_ssaa);
+    bool gfx_changed = (new_mip != prev_mip) || (new_af != prev_af) || (new_msaa != prev_msaa);
 
     s_mod_unlock_all.store(new_unlock, std::memory_order_release);
     s_mod_nintendo_layout.store(new_nintendo, std::memory_order_release);
     s_mod_hd_textures.store(new_hd, std::memory_order_release);
     s_mod_hd_mipmaps.store(new_mip, std::memory_order_release);
     s_mod_aniso_level.store(new_af, std::memory_order_release);
-    s_mod_handheld_ssaa.store(new_ssaa, std::memory_order_release);
+    s_mod_msaa_level.store(new_msaa, std::memory_order_release);
 
     if (unlock_changed || layout_changed || hd_changed || gfx_changed) {
-        saveModConfig(new_unlock, new_nintendo, new_hd, new_mip, new_af, new_ssaa);
+        saveModConfig(new_unlock, new_nintendo, new_hd, new_mip, new_af, new_msaa);
         if (unlock_changed) {
             if (new_unlock) {
                 bool ok = (sc2_scene != 0u) && applyFull300UnlockAll();

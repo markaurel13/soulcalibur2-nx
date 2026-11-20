@@ -75,7 +75,7 @@ ImDrawData *SwitchImGui_BuildModMenu(
     bool hd_avail,
     bool hd_mipmaps,
     int aniso_level,
-    bool handheld_ssaa,
+    int msaa_level,
     int cursor,
     bool applied)
 {
@@ -148,7 +148,7 @@ ImDrawData *SwitchImGui_BuildModMenu(
 
     const RowInfo rows[] = {
         {
-            "Unlock All (300/300)",
+            "Unlock All",
             unlock_all ? "< ON >" : "< OFF >",
             unlock_all ? ImVec4(0.35f, 0.92f, 0.48f, 1.0f) : ImVec4(0.92f, 0.42f, 0.42f, 1.0f),
             "Unlocks all fighters, weapons, stages, costumes, and Museum gallery items."
@@ -160,7 +160,7 @@ ImDrawData *SwitchImGui_BuildModMenu(
             "Swaps A/B in menus for Nintendo controllers while keeping Kick/Guard in combat."
         },
         {
-            "HD Textures (DDS)",
+            "HD Textures",
             hd_val,
             hd_col,
             hd_avail
@@ -177,13 +177,13 @@ ImDrawData *SwitchImGui_BuildModMenu(
             "Anisotropic Filtering",
             aniso_val,
             aniso_col,
-            "Sharpens floors and textures viewed at steep angles (16x recommended)."
+            "Sharpens floors and textures viewed at steep angles."
         },
         {
-            "Handheld Resolution",
-            handheld_ssaa ? "< 1600x900 (SSAA) >" : "< 1280x720 (Native) >",
-            handheld_ssaa ? theme.accent : ImVec4(0.88f, 0.90f, 0.95f, 1.0f),
-            "Supersamples Handheld mode at 1600x900 for cleaner edges, or runs native 720p."
+            "Anti-Aliasing (MSAA)",
+            msaa_level == 2 ? "< 4x >" : (msaa_level == 1 ? "< 2x >" : "< OFF >"),
+            msaa_level > 0 ? ImVec4(0.35f, 0.92f, 0.48f, 1.0f) : ImVec4(0.92f, 0.42f, 0.42f, 1.0f),
+            "Hardware MSAA (OFF / 2x / 4x) for smooth 3D edges. Warning: may cause jagged lines or artifacts on 2D menus and HUD text."
         },
     };
     constexpr int kNumRows = (int)(sizeof(rows) / sizeof(rows[0]));
@@ -216,19 +216,41 @@ ImDrawData *SwitchImGui_BuildModMenu(
         ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y + 6.0f));
     }
 
-    // Description card
+    // Description card (multi-line with automatic font scaling to fit)
     int safe_cur = (cursor >= 0 && cursor < kNumRows) ? cursor : 0;
-    ImVec2 desc_p0 = ImVec2(win_pos.x + 26.0f, win_pos.y + win_sz.y - 96.0f);
-    ImVec2 desc_p1 = ImVec2(win_pos.x + win_w - 26.0f, win_pos.y + win_sz.y - 46.0f);
+    ImVec2 desc_p0 = ImVec2(win_pos.x + 26.0f, win_pos.y + win_sz.y - 110.0f);
+    ImVec2 desc_p1 = ImVec2(win_pos.x + win_w - 26.0f, win_pos.y + win_sz.y - 44.0f);
     dl->AddRectFilled(desc_p0, desc_p1, IM_COL32(10, 12, 18, 255), 8.0f);
     dl->AddRect(desc_p0, desc_p1, IM_COL32(255, 255, 255, 36), 8.0f, 0, 1.0f);
 
     if (g_small_font) ImGui::PushFont(g_small_font);
-    ImGui::SetCursorScreenPos(ImVec2(desc_p0.x + 14.0f, desc_p0.y + 15.0f));
+    const char *desc_txt = rows[safe_cur].desc;
+    const float pad_x = 14.0f;
+    const float box_w = (desc_p1.x - desc_p0.x) - pad_x * 2.0f;
+    const float box_h = (desc_p1.y - desc_p0.y) - 12.0f;
+
+    float font_scale = 1.0f;
+    ImVec2 txt_sz = ImGui::CalcTextSize(desc_txt, nullptr, false, box_w);
+    if (txt_sz.y > box_h) {
+        font_scale = 0.85f;
+        ImGui::SetWindowFontScale(font_scale);
+        txt_sz = ImGui::CalcTextSize(desc_txt, nullptr, false, box_w);
+        if (txt_sz.y > box_h) {
+            font_scale = 0.75f;
+            ImGui::SetWindowFontScale(font_scale);
+            txt_sz = ImGui::CalcTextSize(desc_txt, nullptr, false, box_w);
+        }
+    }
+
+    float text_y = desc_p0.y + ((desc_p1.y - desc_p0.y) - txt_sz.y) * 0.5f;
+    ImGui::SetCursorScreenPos(ImVec2(desc_p0.x + pad_x, text_y));
+    ImGui::PushTextWrapPos(win_w - 26.0f - pad_x);
     ImVec4 desc_col = (safe_cur == 2 && !hd_avail)
         ? ImVec4(0.95f, 0.55f, 0.35f, 1.0f)
         : ImVec4(0.76f, 0.80f, 0.88f, 1.0f);
-    ImGui::TextColored(desc_col, "%s", rows[safe_cur].desc);
+    ImGui::TextColored(desc_col, "%s", desc_txt);
+    ImGui::PopTextWrapPos();
+    if (font_scale != 1.0f) ImGui::SetWindowFontScale(1.0f);
 
     // Footer controls
     ImGui::SetCursorScreenPos(ImVec2(win_pos.x + 26.0f, win_pos.y + win_sz.y - 34.0f));

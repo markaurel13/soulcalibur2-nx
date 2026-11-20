@@ -19,6 +19,7 @@
       --err: #e74c3c;
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -240,7 +241,22 @@
     </section>
 
     <section class="card">
-      <h2>3. Build Switch Package</h2>
+      <h2>3. Soulcalibur II HD Textures Pack (Optional)</h2>
+      <p>Select or drag &amp; drop a Dolphin HD texture pack archive (<code>.7z</code> / <code>.zip</code> / <code>.rar</code>). Unused textures are skipped and combined textures are converted automatically into <code>switch/soulcalibur2/textures/</code>.</p>
+      <div class="dropzone" id="drop-textures">
+        <input type="file" id="file-textures" accept=".7z,.zip,.rar" />
+        <strong>HD Textures Pack</strong><br />
+        <span style="color: var(--muted); font-size: 0.82rem;">.7z / .zip / .rar</span>
+      </div>
+      <div class="pills" id="textures-status"></div>
+      <p style="text-align: center; margin: 10px 0 0; font-size: 0.85rem; color: var(--muted);">
+        Compatible Dolphin HD Texture Pack (hazmatdoll):
+        <a href="https://emulationking.com/nintendo/gamecube/games/soulcaliburii/texturepacks/hazmatdoll/" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline;">Download here</a>
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>4. Build Switch Package</h2>
       <div class="actions">
         <button id="btn-build-zip" class="btn btn-primary" disabled>⚡ Build Switch Package</button>
       </div>
@@ -272,6 +288,6 @@
     </div>
   </div>
 
-  <script type="module" src="./installer/app.js?v=20261115p"></script>
+  <script type="module" src="./installer/app.js?v=20261118o"></script>
 </body>
 </html>

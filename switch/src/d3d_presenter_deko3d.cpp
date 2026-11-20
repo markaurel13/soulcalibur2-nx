@@ -430,6 +430,15 @@ struct RecompD3dPresenter {
     DkImageView framebuffer_views[NUM_FRAMEBUFFERS];
     DkImageView const* target_ptrs[NUM_FRAMEBUFFERS];
 
+    // MSAA Offscreen Color Target (resolved to framebuffer_views[current_slot])
+    DkMemBlock block_msaa_color;
+    DkImage msaa_color_image;
+    DkImageView msaa_color_view;
+    DkImageView const* msaa_color_ptr;
+    int msaa_level; // 0=OFF, 1=2x, 2=4x
+    int msaa_rast_1x_state; // -1=unset, 0=MSAA rasterizer, 1=1x rasterizer (2D HUD)
+    bool msaa_resolved_in_frame;
+
     // Depth Buffer
     DkMemBlock block_depth;
     DkImage depth_image;
@@ -2051,18 +2060,87 @@ extern "C" void Switch_GetDeko3DState(int *current_slot, int *cur_cmd_slot, uint
 
 static uint32_t s_lb_min_y = 0u;
 static uint32_t s_lb_max_y = 0u;
+static uint32_t s_prev_draws_in_frame = 0u;
 
 static void getTargetResolutionForMode(uint32_t *out_w, uint32_t *out_h) {
     if (appletGetOperationMode() == AppletOperationMode_Console) {
         *out_w = 1920u;
         *out_h = 1080u;
-    } else if (SwitchModMenu_GetHandheldSsaa()) {
-        *out_w = 1600u;
-        *out_h = 900u;
     } else {
         *out_w = 1280u;
         *out_h = 720u;
     }
+}
+
+static void destroyMsaaAndDepth(RecompD3dPresenter *p) {
+    if (!p) return;
+    if (p->block_depth) {
+        dkMemBlockDestroy(p->block_depth);
+        p->block_depth = nullptr;
+    }
+    if (p->block_msaa_color) {
+        dkMemBlockDestroy(p->block_msaa_color);
+        p->block_msaa_color = nullptr;
+    }
+    p->msaa_color_ptr = nullptr;
+    p->msaa_level = 0;
+}
+
+static void createMsaaAndDepth(RecompD3dPresenter *p, uint32_t width, uint32_t height, int msaa) {
+    const DkMsMode msMode = (msaa == 2) ? DkMsMode_4x : ((msaa == 1) ? DkMsMode_2x : DkMsMode_1x);
+    p->msaa_level = (msMode != DkMsMode_1x) ? msaa : 0;
+    p->msaa_resolved_in_frame = false;
+    if (p->msaa_level > 0) {
+        DkImageLayoutMaker msaaLayoutMaker;
+        dkImageLayoutMakerDefaults(&msaaLayoutMaker, p->device);
+        msaaLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_HwCompression;
+        msaaLayoutMaker.format = DkImageFormat_RGBA8_Unorm;
+        msaaLayoutMaker.msMode = msMode;
+        msaaLayoutMaker.dimensions[0] = width;
+        msaaLayoutMaker.dimensions[1] = height;
+
+        DkImageLayout msaaLayout;
+        dkImageLayoutInitialize(&msaaLayout, &msaaLayoutMaker);
+        uint32_t msaaSize = dkImageLayoutGetSize(&msaaLayout);
+        uint32_t msaaAlign = dkImageLayoutGetAlignment(&msaaLayout);
+        msaaSize = (msaaSize + msaaAlign - 1) & ~(msaaAlign - 1);
+
+        DkMemBlockMaker msaaMemBlockMaker;
+        dkMemBlockMakerDefaults(&msaaMemBlockMaker, p->device, msaaSize);
+        msaaMemBlockMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+        p->block_msaa_color = dkMemBlockCreate(&msaaMemBlockMaker);
+
+        dkImageInitialize(&p->msaa_color_image, &msaaLayout, p->block_msaa_color, 0);
+        dkImageViewDefaults(&p->msaa_color_view, &p->msaa_color_image);
+        p->msaa_color_ptr = &p->msaa_color_view;
+    } else {
+        p->block_msaa_color = nullptr;
+        p->msaa_color_ptr = nullptr;
+    }
+
+    // Depth Buffer (Z24S8)
+    DkImageLayoutMaker depthLayoutMaker;
+    dkImageLayoutMakerDefaults(&depthLayoutMaker, p->device);
+    depthLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_HwCompression;
+    depthLayoutMaker.format = DkImageFormat_Z24S8;
+    depthLayoutMaker.msMode = msMode;
+    depthLayoutMaker.dimensions[0] = width;
+    depthLayoutMaker.dimensions[1] = height;
+
+    DkImageLayout depthLayout;
+    dkImageLayoutInitialize(&depthLayout, &depthLayoutMaker);
+
+    uint32_t depthSize = dkImageLayoutGetSize(&depthLayout);
+    uint32_t depthAlign = dkImageLayoutGetAlignment(&depthLayout);
+    depthSize = (depthSize + depthAlign - 1) & ~(depthAlign - 1);
+
+    DkMemBlockMaker depthMemBlockMaker;
+    dkMemBlockMakerDefaults(&depthMemBlockMaker, p->device, depthSize);
+    depthMemBlockMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+    p->block_depth = dkMemBlockCreate(&depthMemBlockMaker);
+
+    dkImageInitialize(&p->depth_image, &depthLayout, p->block_depth, 0);
+    dkImageViewDefaults(&p->depth_view, &p->depth_image);
 }
 
 static void destroyResolutionResources(RecompD3dPresenter *p) {
@@ -2078,10 +2156,7 @@ static void destroyResolutionResources(RecompD3dPresenter *p) {
         dkMemBlockDestroy(p->block_gpu_copies);
         p->block_gpu_copies = nullptr;
     }
-    if (p->block_depth) {
-        dkMemBlockDestroy(p->block_depth);
-        p->block_depth = nullptr;
-    }
+    destroyMsaaAndDepth(p);
     if (p->block_framebuffers) {
         dkMemBlockDestroy(p->block_framebuffers);
         p->block_framebuffers = nullptr;
@@ -2124,28 +2199,7 @@ static void createResolutionResources(RecompD3dPresenter *p, uint32_t width, uin
         p->target_ptrs[i] = &p->framebuffer_views[i];
     }
 
-    // Depth Buffer (Z24S8)
-    DkImageLayoutMaker depthLayoutMaker;
-    dkImageLayoutMakerDefaults(&depthLayoutMaker, p->device);
-    depthLayoutMaker.flags = DkImageFlags_UsageRender | DkImageFlags_HwCompression;
-    depthLayoutMaker.format = DkImageFormat_Z24S8;
-    depthLayoutMaker.dimensions[0] = width;
-    depthLayoutMaker.dimensions[1] = height;
-
-    DkImageLayout depthLayout;
-    dkImageLayoutInitialize(&depthLayout, &depthLayoutMaker);
-
-    uint32_t depthSize = dkImageLayoutGetSize(&depthLayout);
-    uint32_t depthAlign = dkImageLayoutGetAlignment(&depthLayout);
-    depthSize = (depthSize + depthAlign - 1) & ~(depthAlign - 1);
-
-    DkMemBlockMaker depthMemBlockMaker;
-    dkMemBlockMakerDefaults(&depthMemBlockMaker, p->device, depthSize);
-    depthMemBlockMaker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
-    p->block_depth = dkMemBlockCreate(&depthMemBlockMaker);
-
-    dkImageInitialize(&p->depth_image, &depthLayout, p->block_depth, 0);
-    dkImageViewDefaults(&p->depth_view, &p->depth_image);
+    createMsaaAndDepth(p, width, height, SwitchModMenu_GetMsaaLevel());
 
     // GPU Copy Pool (for CopyRects / CopyMainColor / backbuffer sampling)
     DkMemBlockMaker gcMaker;
@@ -2339,6 +2393,7 @@ RecompD3dPresenterError d3d_backend_create(
         smp.minFilter = DkFilter_Linear;
         smp.magFilter = DkFilter_Linear;
         smp.mipFilter = DkMipFilter_Linear;
+        smp.lodBias = -0.8f;
         smp.maxAnisotropy = 16.0f;
         auto mapWrap = [](uint32_t code) -> DkWrapMode {
             if (code == 1u) return DkWrapMode_ClampToEdge;
@@ -2419,6 +2474,7 @@ static void syncGraphicsSamplers(RecompD3dPresenter *p, DkCmdBuf cmd) {
         smp.minFilter = DkFilter_Linear;
         smp.magFilter = DkFilter_Linear;
         smp.mipFilter = cur_mip ? DkMipFilter_Linear : DkMipFilter_None;
+        smp.lodBias = cur_mip ? -0.8f : 0.0f;
         smp.maxAnisotropy = kAnisoValues[cur_aniso];
         auto mapWrap = [](uint32_t code) -> DkWrapMode {
             if (code == 1u) return DkWrapMode_ClampToEdge;
@@ -2435,6 +2491,52 @@ static void syncGraphicsSamplers(RecompD3dPresenter *p, DkCmdBuf cmd) {
     s_last_aniso = cur_aniso;
 }
 
+static void bindMultisampleForPass(RecompD3dPresenter *p, DkCmdBuf cmd, bool force_1x_rast) {
+    const int want_1x = (p->msaa_level > 0 && force_1x_rast) ? 1 : 0;
+    if (p->msaa_rast_1x_state == want_1x) return;
+    p->msaa_rast_1x_state = want_1x;
+
+    DkMultisampleState msState;
+    dkMultisampleStateDefaults(&msState);
+    const DkMsMode msMode = (p->msaa_level == 2) ? DkMsMode_4x : ((p->msaa_level == 1) ? DkMsMode_2x : DkMsMode_1x);
+    msState.mode = msMode;
+    msState.rasterizerMode = want_1x ? DkMsMode_1x : msMode;
+    if (p->msaa_level == 2 && !want_1x) {
+        static const DkSampleLocation kMsaa4xLocs[4] = {
+            { 0.375f, 0.125f },
+            { 0.875f, 0.375f },
+            { 0.125f, 0.625f },
+            { 0.625f, 0.875f },
+        };
+        dkMultisampleStateSetLocations(&msState, kMsaa4xLocs, 4);
+    } else if (p->msaa_level == 1 && !want_1x) {
+        static const DkSampleLocation kMsaa2xLocs[2] = {
+            { 0.75f, 0.75f },
+            { 0.25f, 0.25f },
+        };
+        dkMultisampleStateSetLocations(&msState, kMsaa2xLocs, 2);
+    }
+    dkCmdBufBindMultisampleState(cmd, &msState);
+}
+
+static void bindMainRenderTargetAndMsState(RecompD3dPresenter *p, DkCmdBuf cmd) {
+    DkImageView const* color_target = (p->msaa_level > 0)
+        ? p->msaa_color_ptr
+        : p->target_ptrs[p->current_slot];
+    dkCmdBufBindRenderTargets(cmd, &color_target, 1, &p->depth_view);
+    p->msaa_rast_1x_state = -1;
+    bindMultisampleForPass(p, cmd, false);
+}
+
+static void resolveMsaaToSwapchain(RecompD3dPresenter *p, DkCmdBuf cmd) {
+    if (p->msaa_level <= 0 || p->current_slot < 0) return;
+    dkCmdBufBindRenderTargets(cmd, nullptr, 0, nullptr);
+    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+    dkCmdBufResolveImage(cmd, &p->msaa_color_view, &p->framebuffer_views[p->current_slot]);
+    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+    p->msaa_resolved_in_frame = true;
+}
+
 static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
     if (p->current_slot >= 0) return true;
     if (!appletMainLoop()) {
@@ -2444,8 +2546,9 @@ static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
 
     uint32_t target_w = 1280u, target_h = 720u;
     getTargetResolutionForMode(&target_w, &target_h);
+    const int want_msaa = SwitchModMenu_GetMsaaLevel();
     if (target_w != p->width || target_h != p->height) {
-        printf("[Deko3D] Operation mode changed: %ux%u -> %ux%u (recreating swapchain)\n",
+        printf("[Deko3D] Display config changed: %ux%u -> %ux%u (recreating swapchain)\n",
                p->width, p->height, target_w, target_h);
         for (uint32_t i = 0; i < NUM_CMD_SLOTS; ++i) {
             if (p->slot_has_fence[i]) {
@@ -2456,6 +2559,19 @@ static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
         }
         destroyResolutionResources(p);
         createResolutionResources(p, target_w, target_h);
+    } else if (want_msaa != p->msaa_level) {
+        printf("[Deko3D] MSAA mode changed: %d -> %d (zero-flicker target switch)\n",
+               p->msaa_level, want_msaa);
+        for (uint32_t i = 0; i < NUM_CMD_SLOTS; ++i) {
+            if (p->slot_has_fence[i]) {
+                dkFenceWait(&p->slot_fences[i], -1);
+                p->slot_has_fence[i] = false;
+                p->query_count[i] = 0;
+            }
+        }
+        if (p->queue) dkQueueWaitIdle(p->queue);
+        destroyMsaaAndDepth(p);
+        createMsaaAndDepth(p, p->width, p->height, want_msaa);
     }
 
     uint32_t slot = p->cur_cmd_slot;
@@ -2537,9 +2653,10 @@ static bool beginFrameIfNeeded(RecompD3dPresenter *p) {
     if (p->current_slot < 0) return false;
 
     DkCmdBuf cmd = p->cmdbuf[slot];
+    p->msaa_resolved_in_frame = false;
     dkCmdBufClear(cmd);
     dkCmdBufAddMemory(cmd, p->block_cmd[slot], 0, CMD_BUF_SIZE);
-    dkCmdBufBindRenderTargets(cmd, &p->target_ptrs[p->current_slot], 1, &p->depth_view);
+    bindMainRenderTargetAndMsState(p, cmd);
     dkCmdBufBindImageDescriptorSet(cmd, p->img_descs_gpu, MAX_IMAGE_DESCS);
     syncGraphicsSamplers(p, cmd);
     dkCmdBufBindSamplerDescriptorSet(cmd, p->smp_descs_gpu, MAX_SAMPLER_DESCS);
@@ -2670,6 +2787,9 @@ static void drawFpsOverlay(RecompD3dPresenter *p, DkCmdBuf cmd, double fps, doub
     if (vtx_count == 0) return;
 
     dkCmdBufBindRenderTargets(cmd, &p->target_ptrs[p->current_slot], 1, nullptr);
+    DkMultisampleState ms1x;
+    dkMultisampleStateDefaults(&ms1x);
+    dkCmdBufBindMultisampleState(cmd, &ms1x);
 
     DkViewport viewport = { 0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f };
     dkCmdBufSetViewports(cmd, 0, &viewport, 1);
@@ -2891,7 +3011,7 @@ static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
         SwitchModMenu_HasHdTextures(),
         SwitchModMenu_GetHdMipmaps(),
         SwitchModMenu_GetAnisoLevel(),
-        SwitchModMenu_GetHandheldSsaaUi(),
+        SwitchModMenu_GetMsaaLevelUi(),
         SwitchModMenu_GetCursor(),
         SwitchModMenu_WasApplied());
     if (!dd || dd->TotalVtxCount <= 0 || dd->TotalIdxCount <= 0) return;
@@ -2934,6 +3054,9 @@ static void drawModMenuOverlay(RecompD3dPresenter *p, DkCmdBuf cmd) {
     uint32_t idx_written = 0;
 
     dkCmdBufBindRenderTargets(cmd, &p->target_ptrs[p->current_slot], 1, nullptr);
+    DkMultisampleState ms1x;
+    dkMultisampleStateDefaults(&ms1x);
+    dkCmdBufBindMultisampleState(cmd, &ms1x);
     DkViewport viewport = { 0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f };
     dkCmdBufSetViewports(cmd, 0, &viewport, 1);
 
@@ -3097,7 +3220,6 @@ static StageDiagCounters g_sdiag;
 static uint32_t s_cur_clear_color = 0u;
 
 static uint32_t s_clears_in_frame = 0u;
-static uint32_t s_prev_draws_in_frame = 0u;
 
 static void Switch_PresentFrozenModMenuFrame(void);
 
@@ -3213,10 +3335,17 @@ RecompD3dPresenterError d3d_backend_submit(
                 uint32_t cslot = presenter->cur_cmd_slot;
                 DkCmdBuf ccmd = presenter->cmdbuf[cslot];
                 DkImageRect rect = { 0, 0, 0, presenter->width, presenter->height, 1 };
-                dkCmdBufBarrier(ccmd, DkBarrier_Full, DkInvalidateFlags_Image);
+                if (presenter->msaa_level > 0) {
+                    resolveMsaaToSwapchain(presenter, ccmd);
+                } else {
+                    dkCmdBufBarrier(ccmd, DkBarrier_Full, DkInvalidateFlags_Image);
+                }
                 dkCmdBufBlitImage(ccmd, &presenter->framebuffer_views[presenter->current_slot], &rect,
                                   &presenter->backbuffer_snap_view, &rect, DkBlitFlag_FilterNearest, 0);
                 dkCmdBufBarrier(ccmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+                if (presenter->msaa_level > 0) {
+                    bindMainRenderTargetAndMsState(presenter, ccmd);
+                }
                 return MAX_TEX_CACHE + 1;
             }
             if (is_front_buffer || is_backbuffer) ++g_sdiag.backbuf_tex_draws;
@@ -3973,6 +4102,10 @@ RecompD3dPresenterError d3d_backend_submit(
             depthState.stencilTestEnable = false;
         }
         dkCmdBufBindDepthStencilState(cmd, &depthState);
+        if (presenter->msaa_level > 0) {
+            const bool is_2d_hud = !depthState.depthTestEnable && !depthState.stencilTestEnable;
+            bindMultisampleForPass(presenter, cmd, is_2d_hud);
+        }
 
         // CRITICAL FIX: Respect color_write_mask == 0 for 3D stencil shadow volume extrusions!
         DkColorWriteState colorWrite;
@@ -4128,10 +4261,17 @@ RecompD3dPresenterError d3d_backend_submit(
             DkCmdBuf cmd = presenter->cmdbuf[slot];
             DkImageRect srcRect = { 0, 0, 0, presenter->width, presenter->height, 1 };
             DkImageRect dstRect = { 0, 0, 0, dst->width, dst->height, 1 };
-            dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+            if (presenter->msaa_level > 0) {
+                resolveMsaaToSwapchain(presenter, cmd);
+            } else {
+                dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+            }
             dkCmdBufBlitImage(cmd, &presenter->framebuffer_views[presenter->current_slot], &srcRect,
                               &dst->view, &dstRect, DkBlitFlag_FilterLinear, 0);
             dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+            if (presenter->msaa_level > 0) {
+                bindMainRenderTargetAndMsState(presenter, cmd);
+            }
         }
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_RECT) {
         if (!beginFrameIfNeeded(presenter)) return RECOMP_D3D_PRESENTER_CLOSED;
@@ -4158,10 +4298,17 @@ RecompD3dPresenterError d3d_backend_submit(
                 DkCmdBuf cmd = presenter->cmdbuf[slot];
                 DkImageRect srcRect = { sx, sy, 0, sw, sh, 1 };
                 DkImageRect dstRect = { dx, dy, 0, dw, dh, 1 };
-                dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+                if (!cr.from_previous_frame && presenter->msaa_level > 0) {
+                    resolveMsaaToSwapchain(presenter, cmd);
+                } else {
+                    dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+                }
                 dkCmdBufBlitImage(cmd, &presenter->framebuffer_views[src_slot], &srcRect,
                                   &dst->view, &dstRect, DkBlitFlag_FilterLinear, 0);
                 dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
+                if (!cr.from_previous_frame && presenter->msaa_level > 0) {
+                    bindMainRenderTargetAndMsState(presenter, cmd);
+                }
             }
         }
     } else if (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT) {
@@ -4214,10 +4361,13 @@ RecompD3dPresenterError d3d_backend_submit(
                                   DkBlitFlag_FilterNearest, 0);
                 dkCmdBufBarrier(cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors | DkInvalidateFlags_Image);
             } else {
+                dkCmdBufBindRenderTargets(cmd, &presenter->target_ptrs[presenter->current_slot], 1, nullptr);
                 DkScissor full_sc = { 0, 0, presenter->width, presenter->height };
                 dkCmdBufSetScissors(cmd, 0, &full_sc, 1);
                 dkCmdBufClearColorFloat(cmd, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
             }
+        } else {
+            resolveMsaaToSwapchain(presenter, cmd);
         }
 
         if (Switch_IsFpsOverlayEnabled()) {

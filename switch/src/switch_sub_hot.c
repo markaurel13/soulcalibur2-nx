@@ -161,7 +161,7 @@ loc_00040625: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0004063Fu); RECOMP_ABI_CALL(0x0003FCF0u, sub_0003FCF0); /* call 0x0003FCF0 */
+    PUSH32(esp, 0x0004063Fu); sub_0003FCF0(); /* call 0x0003FCF0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -185,7 +185,7 @@ loc_00040659: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0004065Eu); RECOMP_ABI_CALL(0x0003FB80u, sub_0003FB80); /* call 0x0003FB80 */
+    PUSH32(esp, 0x0004065Eu); sub_0003FB80(); /* call 0x0003FB80 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -251,7 +251,7 @@ loc_000406A0: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000406A7u); RECOMP_ABI_CALL(0x0003D4A0u, sub_0003D4A0); /* call 0x0003D4A0 */
+    PUSH32(esp, 0x000406A7u); sub_0003D4A0(); /* call 0x0003D4A0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -269,7 +269,7 @@ loc_000406AE: ;
     PUSH32(esp, esi);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000406B5u); RECOMP_ABI_CALL(0x0003D870u, sub_0003D870); /* call 0x0003D870 */
+    PUSH32(esp, 0x000406B5u); sub_0003D870(); /* call 0x0003D870 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -307,7 +307,7 @@ loc_000406C5: ;
     g_eflags = (g_eflags & ~1u) | ((0) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000406E2u); RECOMP_ABI_CALL(0x0003E310u, sub_0003E310); /* call 0x0003E310 */
+    PUSH32(esp, 0x000406E2u); sub_0003E310(); /* call 0x0003E310 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -316,7 +316,7 @@ loc_000406E2: ;
     PUSH32(esp, esi);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000406E9u); RECOMP_ABI_CALL(0x0009A900u, sub_0009A900); /* call 0x0009A900 */
+    PUSH32(esp, 0x000406E9u); sub_0009A900(); /* call 0x0009A900 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -356,7 +356,7 @@ loc_000406FF: ;
     g_eflags = (g_eflags & ~1u) | (((_fk == 0x11A6DAE2u ? (CMP_B(_fa, _fb)) : _cf)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00040706u); RECOMP_ABI_CALL(0x000436E0u, sub_000436E0); /* call 0x000436E0 */
+    PUSH32(esp, 0x00040706u); sub_000436E0(); /* call 0x000436E0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -365,7 +365,7 @@ loc_00040706: ;
     PUSH32(esp, edx);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00040712u); RECOMP_ABI_CALL(0x00033E40u, sub_00033E40); /* call 0x00033E40 */
+    PUSH32(esp, 0x00040712u); sub_00033E40(); /* call 0x00033E40 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -373,7 +373,7 @@ loc_00040712: ;
     fp_top() = RECOMP_FP_PC(fp_top() * MEMF(0x177898)); /* fmul dword ptr [0x177898] */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0004071Du); RECOMP_ABI_CALL(0x00145A64u, sub_00145A64); /* call 0x00145A64 */
+    PUSH32(esp, 0x0004071Du); sub_00145A64(); /* call 0x00145A64 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -383,7 +383,7 @@ loc_0004071D: ;
     PUSH32(esp, esi);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00040725u); RECOMP_ABI_CALL(0x0003E670u, sub_0003E670); /* call 0x0003E670 */
+    PUSH32(esp, 0x00040725u); sub_0003E670(); /* call 0x0003E670 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -413,7 +413,7 @@ loc_00040736: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0004073Du); RECOMP_ABI_CALL(0x0003F230u, sub_0003F230); /* call 0x0003F230 */
+    PUSH32(esp, 0x0004073Du); sub_0003F230(); /* call 0x0003F230 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -430,7 +430,7 @@ loc_00040740: ;
     g_eflags = (g_eflags & ~1u) | (((_fk == 0xD0F44B25u ? (_cf) : (_fk == 0x11A6DAE2u ? (CMP_B(_fa, _fb)) : CMP_B(_fa, _fb)))) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00040747u); RECOMP_ABI_CALL(0x0003F520u, sub_0003F520); /* call 0x0003F520 */
+    PUSH32(esp, 0x00040747u); sub_0003F520(); /* call 0x0003F520 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -476,7 +476,7 @@ loc_00040761: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00040770u); RECOMP_ABI_CALL(0x0003FCF0u, sub_0003FCF0); /* call 0x0003FCF0 */
+    PUSH32(esp, 0x00040770u); sub_0003FCF0(); /* call 0x0003FCF0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -496,7 +496,7 @@ loc_00040777: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0004077Cu); RECOMP_ABI_CALL(0x0003FB80u, sub_0003FB80); /* call 0x0003FB80 */
+    PUSH32(esp, 0x0004077Cu); sub_0003FB80(); /* call 0x0003FB80 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -560,7 +560,7 @@ loc_00067D8C: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00067D96u); RECOMP_ABI_CALL(0x00011130u, sub_00011130); /* call 0x00011130 */
+    PUSH32(esp, 0x00067D96u); sub_00011130(); /* call 0x00011130 */
     _cf = g_eflags & 1u; /* callee carry */
 
 loc_00067D96: ;
@@ -580,7 +580,7 @@ loc_00067D96: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00067DB1u); RECOMP_ABI_CALL(0x00011390u, sub_00011390); /* call 0x00011390 */
+    PUSH32(esp, 0x00067DB1u); sub_00011390(); /* call 0x00011390 */
     _cf = g_eflags & 1u; /* callee carry */
 
 loc_00067DB1: ;
@@ -589,7 +589,7 @@ loc_00067DB1: ;
     ecx = esp + 0x14;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00067DBFu); RECOMP_ABI_CALL(0x000120E0u, sub_000120E0); /* call 0x000120E0 */
+    PUSH32(esp, 0x00067DBFu); sub_000120E0(); /* call 0x000120E0 */
     _cf = g_eflags & 1u; /* callee carry */
 
 loc_00067DBF: ;
@@ -632,7 +632,7 @@ loc_00067DBF: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00067E2Cu); RECOMP_ABI_CALL(0x00067CE0u, sub_00067CE0); /* call 0x00067CE0 */
+    PUSH32(esp, 0x00067E2Cu); sub_00067CE0(); /* call 0x00067CE0 */
     _cf = g_eflags & 1u; /* callee carry */
 
 loc_00067E2C: ;
@@ -810,7 +810,7 @@ loc_00068951: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068984u); RECOMP_ABI_CALL(0x00011C20u, sub_00011C20); /* call 0x00011C20 */
+    PUSH32(esp, 0x00068984u); sub_00011C20(); /* call 0x00011C20 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -835,7 +835,7 @@ loc_00068984: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000689B8u); RECOMP_ABI_CALL(0x00011B60u, sub_00011B60); /* call 0x00011B60 */
+    PUSH32(esp, 0x000689B8u); sub_00011B60(); /* call 0x00011B60 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -847,7 +847,7 @@ loc_000689B8: ;
     ecx = esi;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000689CFu); RECOMP_ABI_CALL(0x000120E0u, sub_000120E0); /* call 0x000120E0 */
+    PUSH32(esp, 0x000689CFu); sub_000120E0(); /* call 0x000120E0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -916,7 +916,7 @@ loc_00068A26: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068A46u); RECOMP_ABI_CALL(0x0007ED30u, sub_0007ED30); /* call 0x0007ED30 */
+    PUSH32(esp, 0x00068A46u); sub_0007ED30(); /* call 0x0007ED30 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -969,7 +969,7 @@ loc_00068A8C: ;
     g_eflags = (g_eflags & ~1u) | ((0) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068AB0u); RECOMP_ABI_CALL(0x000123C0u, sub_000123C0); /* call 0x000123C0 */
+    PUSH32(esp, 0x00068AB0u); sub_000123C0(); /* call 0x000123C0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -982,7 +982,7 @@ loc_00068AB0: ;
     ecx = edi;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068AC1u); RECOMP_ABI_CALL(0x000129F0u, sub_000129F0); /* call 0x000129F0 */
+    PUSH32(esp, 0x00068AC1u); sub_000129F0(); /* call 0x000129F0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -994,7 +994,7 @@ loc_00068AC1: ;
     PUSH32(esp, ecx);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068AD4u); RECOMP_ABI_CALL(0x000129F0u, sub_000129F0); /* call 0x000129F0 */
+    PUSH32(esp, 0x00068AD4u); sub_000129F0(); /* call 0x000129F0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1135,7 +1135,7 @@ loc_00068BAE: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068BDCu); RECOMP_ABI_CALL(0x00012B00u, sub_00012B00); /* call 0x00012B00 */
+    PUSH32(esp, 0x00068BDCu); sub_00012B00(); /* call 0x00012B00 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1150,7 +1150,7 @@ loc_00068BDC: ;
     fp_pop(); /* fstp st(0) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068BF6u); RECOMP_ABI_CALL(0x000126A0u, sub_000126A0); /* call 0x000126A0 */
+    PUSH32(esp, 0x00068BF6u); sub_000126A0(); /* call 0x000126A0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1172,7 +1172,7 @@ loc_00068BF6: ;
     MEM32(esp + 0x38) = edx;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068C35u); RECOMP_ABI_CALL(0x00012B00u, sub_00012B00); /* call 0x00012B00 */
+    PUSH32(esp, 0x00068C35u); sub_00012B00(); /* call 0x00012B00 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1187,7 +1187,7 @@ loc_00068C35: ;
     fp_pop(); /* fstp st(0) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068C4Fu); RECOMP_ABI_CALL(0x000126A0u, sub_000126A0); /* call 0x000126A0 */
+    PUSH32(esp, 0x00068C4Fu); sub_000126A0(); /* call 0x000126A0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1209,7 +1209,7 @@ loc_00068C4F: ;
     MEM32(esp + 0x38) = edx;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068C8Eu); RECOMP_ABI_CALL(0x00012B00u, sub_00012B00); /* call 0x00012B00 */
+    PUSH32(esp, 0x00068C8Eu); sub_00012B00(); /* call 0x00012B00 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1224,7 +1224,7 @@ loc_00068C8E: ;
     fp_pop(); /* fstp st(0) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068CA8u); RECOMP_ABI_CALL(0x000126A0u, sub_000126A0); /* call 0x000126A0 */
+    PUSH32(esp, 0x00068CA8u); sub_000126A0(); /* call 0x000126A0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1250,7 +1250,7 @@ loc_00068CA8: ;
     MEM32(esp + 0x40) = edx;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068CEFu); RECOMP_ABI_CALL(0x000127F0u, sub_000127F0); /* call 0x000127F0 */
+    PUSH32(esp, 0x00068CEFu); sub_000127F0(); /* call 0x000127F0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1260,7 +1260,7 @@ loc_00068CEF: ;
     ecx = eax;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068CFCu); RECOMP_ABI_CALL(0x000126A0u, sub_000126A0); /* call 0x000126A0 */
+    PUSH32(esp, 0x00068CFCu); sub_000126A0(); /* call 0x000126A0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1279,7 +1279,7 @@ loc_00068CFC: ;
     MEM32(esp + 0xA4) = 0x3F800000;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068D39u); RECOMP_ABI_CALL(0x00011250u, sub_00011250); /* call 0x00011250 */
+    PUSH32(esp, 0x00068D39u); sub_00011250(); /* call 0x00011250 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1292,7 +1292,7 @@ loc_00068D39: ;
     ecx = esp + 0x6C;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068D4Fu); RECOMP_ABI_CALL(0x00011C20u, sub_00011C20); /* call 0x00011C20 */
+    PUSH32(esp, 0x00068D4Fu); sub_00011C20(); /* call 0x00011C20 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1318,7 +1318,7 @@ loc_00068D4F: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068D8Au); RECOMP_ABI_CALL(0x00011B60u, sub_00011B60); /* call 0x00011B60 */
+    PUSH32(esp, 0x00068D8Au); sub_00011B60(); /* call 0x00011B60 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1328,7 +1328,7 @@ loc_00068D8A: ;
     PUSH32(esp, edx);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068D9Bu); RECOMP_ABI_CALL(0x000120E0u, sub_000120E0); /* call 0x000120E0 */
+    PUSH32(esp, 0x00068D9Bu); sub_000120E0(); /* call 0x000120E0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1347,7 +1347,7 @@ loc_00068D9B: ;
     MEM32(ebx + -12) = edx;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068DD7u); RECOMP_ABI_CALL(0x000123C0u, sub_000123C0); /* call 0x000123C0 */
+    PUSH32(esp, 0x00068DD7u); sub_000123C0(); /* call 0x000123C0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1360,7 +1360,7 @@ loc_00068DD7: ;
     PUSH32(esp, ecx);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068DEEu); RECOMP_ABI_CALL(0x000129F0u, sub_000129F0); /* call 0x000129F0 */
+    PUSH32(esp, 0x00068DEEu); sub_000129F0(); /* call 0x000129F0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1372,7 +1372,7 @@ loc_00068DEE: ;
     PUSH32(esp, ecx);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068DFEu); RECOMP_ABI_CALL(0x000129F0u, sub_000129F0); /* call 0x000129F0 */
+    PUSH32(esp, 0x00068DFEu); sub_000129F0(); /* call 0x000129F0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1455,7 +1455,7 @@ loc_00068E70: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068E7Bu); RECOMP_ABI_CALL(0x00011710u, sub_00011710); /* call 0x00011710 */
+    PUSH32(esp, 0x00068E7Bu); sub_00011710(); /* call 0x00011710 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1477,7 +1477,7 @@ loc_00068E7B: ;
     MEM32(esi + 0x3C) = 0x3F800000;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068EA7u); RECOMP_ABI_CALL(0x00011B60u, sub_00011B60); /* call 0x00011B60 */
+    PUSH32(esp, 0x00068EA7u); sub_00011B60(); /* call 0x00011B60 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1499,7 +1499,7 @@ loc_00068EA7: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00068EBAu); RECOMP_ABI_CALL(0x00011250u, sub_00011250); /* call 0x00011250 */
+    PUSH32(esp, 0x00068EBAu); sub_00011250(); /* call 0x00011250 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1583,7 +1583,7 @@ loc_000477A0: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x000477C6u); RECOMP_ABI_CALL(0x00047750u, sub_00047750); /* call 0x00047750 */
+    PUSH32(esp, 0x000477C6u); sub_00047750(); /* call 0x00047750 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1636,7 +1636,7 @@ loc_00047810: ;
     g_eflags = (g_eflags & ~1u) | (((_fk == 0x3E0F5DA7u ? (0) : CMP_B(_fa, _fb))) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047817u); RECOMP_ABI_CALL(0x00043120u, sub_00043120); /* call 0x00043120 */
+    PUSH32(esp, 0x00047817u); sub_00043120(); /* call 0x00043120 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1692,7 +1692,7 @@ loc_00047853: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047863u); RECOMP_ABI_CALL(0x00145BE2u, sub_00145BE2); /* call 0x00145BE2 */
+    PUSH32(esp, 0x00047863u); sub_00145BE2(); /* call 0x00145BE2 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1701,7 +1701,7 @@ loc_00047863: ;
     PUSH32(esp, ebp);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0004786Au); RECOMP_ABI_CALL(0x0003E970u, sub_0003E970); /* call 0x0003E970 */
+    PUSH32(esp, 0x0004786Au); sub_0003E970(); /* call 0x0003E970 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1710,7 +1710,7 @@ loc_0004786A: ;
     PUSH32(esp, ebp);
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047871u); RECOMP_ABI_CALL(0x000432E0u, sub_000432E0); /* call 0x000432E0 */
+    PUSH32(esp, 0x00047871u); sub_000432E0(); /* call 0x000432E0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1735,7 +1735,7 @@ loc_0004787A: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047880u); RECOMP_ABI_CALL(0x00044030u, sub_00044030); /* call 0x00044030 */
+    PUSH32(esp, 0x00047880u); sub_00044030(); /* call 0x00044030 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1964,7 +1964,7 @@ loc_00047A53: ;
     g_eflags = (g_eflags & ~1u) | ((0) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047A62u); RECOMP_ABI_CALL(0x00145D40u, sub_00145D40); /* call 0x00145D40 */
+    PUSH32(esp, 0x00047A62u); sub_00145D40(); /* call 0x00145D40 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -1999,7 +1999,7 @@ loc_00047A89: ;
     g_eflags = (g_eflags & ~1u) | (((_fk == 0x00874B0Eu ? (CMP_B(_fa, _fb)) : (_fk == 0x255BDEF4u ? (CMP_B(_fa, _fb)) : CMP_B(_fa & _fb, 0)))) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047A8Fu); RECOMP_ABI_CALL(0x00045170u, sub_00045170); /* call 0x00045170 */
+    PUSH32(esp, 0x00047A8Fu); sub_00045170(); /* call 0x00045170 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2024,7 +2024,7 @@ loc_00047A9E: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047AAAu); RECOMP_ABI_CALL(0x0007F370u, sub_0007F370); /* call 0x0007F370 */
+    PUSH32(esp, 0x00047AAAu); sub_0007F370(); /* call 0x0007F370 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2042,7 +2042,7 @@ loc_00047AB2: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047ABEu); RECOMP_ABI_CALL(0x0007F370u, sub_0007F370); /* call 0x0007F370 */
+    PUSH32(esp, 0x00047ABEu); sub_0007F370(); /* call 0x0007F370 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2055,7 +2055,7 @@ loc_00047AC2: ;
     MEM32(esp + 0x14) = ecx;
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047AD2u); RECOMP_ABI_CALL(0x00043FF0u, sub_00043FF0); /* call 0x00043FF0 */
+    PUSH32(esp, 0x00047AD2u); sub_00043FF0(); /* call 0x00043FF0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2066,7 +2066,7 @@ loc_00047AD2: ;
     MEMF(esp) = (float)fp_top(); fp_pop(); /* fstp */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047AEAu); RECOMP_ABI_CALL(0x00033E40u, sub_00033E40); /* call 0x00033E40 */
+    PUSH32(esp, 0x00047AEAu); sub_00033E40(); /* call 0x00033E40 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2112,7 +2112,7 @@ loc_00047B19: ;
     g_eflags = (g_eflags & ~1u) | (((_fk == 0x7434F103u ? (_cf) : CMP_B(_fa, _fb))) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047B1Fu); RECOMP_ABI_CALL(0x000442C0u, sub_000442C0); /* call 0x000442C0 */
+    PUSH32(esp, 0x00047B1Fu); sub_000442C0(); /* call 0x000442C0 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2156,7 +2156,7 @@ loc_00047B38: ;
     g_eflags = (g_eflags & ~1u) | ((_cf) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047B4Cu); RECOMP_ABI_CALL(0x00011B60u, sub_00011B60); /* call 0x00011B60 */
+    PUSH32(esp, 0x00047B4Cu); sub_00011B60(); /* call 0x00011B60 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2170,7 +2170,7 @@ loc_00047B4C: ;
     g_eflags = (g_eflags & ~1u) | ((0) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047B5Bu); RECOMP_ABI_CALL(0x00145D40u, sub_00145D40); /* call 0x00145D40 */
+    PUSH32(esp, 0x00047B5Bu); sub_00145D40(); /* call 0x00145D40 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2226,7 +2226,7 @@ loc_00047BB6: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x00047BC2u); RECOMP_ABI_CALL(0x001456E4u, sub_001456E4); /* call 0x001456E4 */
+    PUSH32(esp, 0x00047BC2u); sub_001456E4(); /* call 0x001456E4 */
     _cf = g_eflags & 1u; /* callee carry */
     _fk = 0x00000000u; /* flag setter tag */
 
@@ -2494,7 +2494,7 @@ loc_00023925: ;
     g_eflags = (g_eflags & ~1u) | ((CMP_B(_fa, _fb)) ? 0x1u : 0u); /* flags across call boundary (carry-only opt) */
     g_ebp = ebp; /* frame stays current across calls */
     g_seh_ebp = ebp;
-    PUSH32(esp, 0x0002392Du); RECOMP_ABI_CALL(0x00145A64u, sub_00145A64); /* call 0x00145A64 */
+    PUSH32(esp, 0x0002392Du); sub_00145A64(); /* call 0x00145A64 */
     _cf = g_eflags & 1u; /* callee carry */
 
 loc_0002392D: ;
