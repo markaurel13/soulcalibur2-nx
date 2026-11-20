@@ -47,6 +47,7 @@ const state = {
   texturesBytes: 0,
   textureMap: null,
   zipUrl: null,
+  texZipUrl: null,
   packageBuilt: false,
   pyodide: null,
   isBuilding: false,
@@ -60,12 +61,16 @@ function resetBuiltPackage() {
     URL.revokeObjectURL(state.zipUrl);
     state.zipUrl = null;
   }
+  if (state.texZipUrl) {
+    URL.revokeObjectURL(state.texZipUrl);
+    state.texZipUrl = null;
+  }
 }
 
-function triggerZipDownload(url) {
+function triggerZipDownload(url, filename = "soulcalibur2_nx_package.zip") {
   const a = document.createElement("a");
   a.href = url;
-  a.download = "soulcalibur2_nx_package.zip";
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -531,8 +536,13 @@ function createTextureConverter() {
 async function buildSwitchPackageZip() {
   if (state.isBuilding) return;
   if (state.packageBuilt && state.zipUrl) {
-    triggerZipDownload(state.zipUrl);
-    log("Downloading soulcalibur2_nx_package.zip again...", "ok");
+    triggerZipDownload(state.zipUrl, "soulcalibur2_nx_package.zip");
+    if (state.texZipUrl) {
+      setTimeout(() => triggerZipDownload(state.texZipUrl, "soulcalibur2_nx_textures.zip"), 500);
+      log("Downloading soulcalibur2_nx_package.zip and soulcalibur2_nx_textures.zip again...", "ok");
+    } else {
+      log("Downloading soulcalibur2_nx_package.zip again...", "ok");
+    }
     return;
   }
   state.isBuilding = true;
@@ -571,41 +581,51 @@ async function buildSwitchPackageZip() {
     setProgress(75, "Packaging switch/soulcalibur2/ into ZIP...");
     log(`Packaging Switch ZIP (~${formatBytes(totalBytes)})...`);
 
-    const texConverter = state.textureConvertCount > 0 ? createTextureConverter() : null;
     const totTex = state.textureJobs.length;
+    const splitForBlobLimit = !saveHandle && totTex > 0 && totalBytes > 1850 * 1024 * 1024;
+    const texConverter = state.textureConvertCount > 0 ? createTextureConverter() : null;
     let doneTex = 0;
     let written = 0;
     let nextLogPct = 25;
     let lastUiBytes = 0;
 
-    async function* generateAllEntries() {
-      try {
-        for (const e of entries) yield e;
-        for (const job of state.textureJobs) {
-          const input = job.kind === "direct"
-            ? job.file
-            : await texConverter.convert(job);
-          doneTex++;
-          if (doneTex % 50 === 0 || doneTex === totTex) {
-            setProgress(
-              88 + (doneTex / totTex) * 11,
-              `Packaging HD textures: ${doneTex} / ${totTex} (${formatBytes(written)})...`
-            );
-            if (doneTex % 250 === 0 || doneTex === totTex) {
-              log(`Converting/packaging HD textures: ${doneTex} / ${totTex}...`);
-            }
+    async function* generateTextureEntries() {
+      for (const job of state.textureJobs) {
+        const input = job.kind === "direct"
+          ? job.file
+          : await texConverter.convert(job);
+        doneTex++;
+        if (doneTex % 50 === 0 || doneTex === totTex) {
+          setProgress(
+            88 + (doneTex / totTex) * 11,
+            `Packaging HD textures: ${doneTex} / ${totTex} (${formatBytes(written)})...`
+          );
+          if (doneTex % 250 === 0 || doneTex === totTex) {
+            log(`Converting/packaging HD textures: ${doneTex} / ${totTex}...`);
           }
-          yield { name: `switch/soulcalibur2/textures/${job.name}`, input };
         }
-      } finally {
-        if (texConverter) texConverter.close();
+        yield { name: `switch/soulcalibur2/textures/${job.name}`, input };
       }
     }
 
-    const zipResponse = downloadZip(generateAllEntries());
-    const reader = zipResponse.body.getReader();
+    async function* generateAllEntries(includeBase, includeTex) {
+      try {
+        if (includeBase) {
+          for (const e of entries) yield e;
+        }
+        if (includeTex && totTex > 0) {
+          yield* generateTextureEntries();
+        }
+      } finally {
+        if (texConverter && (!splitForBlobLimit || includeTex)) {
+          texConverter.close();
+        }
+      }
+    }
 
-    async function consumeZipStream(onChunk) {
+    async function streamZip(entryIter, onChunk) {
+      const zipResponse = downloadZip(entryIter);
+      const reader = zipResponse.body.getReader();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -631,24 +651,53 @@ async function buildSwitchPackageZip() {
     if (saveHandle) {
       const writable = await saveHandle.createWritable();
       try {
-        await consumeZipStream((chunk) => writable.write(chunk));
+        await streamZip(generateAllEntries(true, true), (chunk) => writable.write(chunk));
       } finally {
         await writable.close();
       }
       state.packageBuilt = true;
       setProgress(100, "Switch package saved! Extract it to the root of your microSD card.");
       log("Done! soulcalibur2_nx_package.zip saved (switch/soulcalibur2/ structure).", "ok");
+    } else if (splitForBlobLimit) {
+      log("Package > 1.85 GB without File System Access API: splitting into 2 ZIPs to avoid browser 2 GB Blob limit.", "warn");
+      const baseChunks = [];
+      await streamZip(generateAllEntries(true, false), (chunk) => {
+        baseChunks.push(chunk);
+      });
+      const baseBlob = new Blob(baseChunks, { type: "application/zip" });
+      baseChunks.length = 0;
+
+      const texChunks = [];
+      await streamZip(generateAllEntries(false, true), (chunk) => {
+        texChunks.push(chunk);
+      });
+      const texBlob = new Blob(texChunks, { type: "application/zip" });
+      texChunks.length = 0;
+
+      if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
+      if (state.texZipUrl) URL.revokeObjectURL(state.texZipUrl);
+      state.zipUrl = URL.createObjectURL(baseBlob);
+      state.texZipUrl = URL.createObjectURL(texBlob);
+      state.packageBuilt = true;
+      triggerZipDownload(state.zipUrl, "soulcalibur2_nx_package.zip");
+      setTimeout(() => triggerZipDownload(state.texZipUrl, "soulcalibur2_nx_textures.zip"), 500);
+      setProgress(100, "Both ZIPs downloaded! Extract both to the root of your microSD card.");
+      log("Done! Downloaded soulcalibur2_nx_package.zip + soulcalibur2_nx_textures.zip.", "ok");
     } else {
       const chunks = [];
-      await consumeZipStream((chunk) => {
+      await streamZip(generateAllEntries(true, true), (chunk) => {
         chunks.push(chunk);
       });
       const zipBlob = new Blob(chunks, { type: "application/zip" });
       chunks.length = 0;
       if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
+      if (state.texZipUrl) {
+        URL.revokeObjectURL(state.texZipUrl);
+        state.texZipUrl = null;
+      }
       state.zipUrl = URL.createObjectURL(zipBlob);
       state.packageBuilt = true;
-      triggerZipDownload(state.zipUrl);
+      triggerZipDownload(state.zipUrl, "soulcalibur2_nx_package.zip");
       setProgress(100, "Switch package downloaded! Extract it to the root of your microSD card.");
       log("Done! soulcalibur2_nx_package.zip download started.", "ok");
     }
